@@ -1,0 +1,6 @@
+# Windows 上写 shell 脚本，checkout 时容易被转成 CRLF，容器里会报
+# `bad interpreter: /bin/bash^M`。锁死成 LF。
+*.sh      text eol=lf
+*.py      text eol=lf
+Dockerfile text eol=lf
+*.conf    text eol=lf

@@ -1,0 +1,55 @@
+# ============================================================================
+# Zeabur 环境变量清单（方案 A · 第一阶段）
+# ============================================================================
+# 用法：Zeabur → 你的服务 → Environment Variables，照下面一条条加。
+# ⚠️ 这个文件只放占位符。真实的密钥请直接填在 Zeabur 面板里，不要写进这里、
+#    不要提交进 git、不要发在聊天里。
+# ============================================================================
+
+# ── 必填 ────────────────────────────────────────────────────────────────────
+
+# 唯一的一把钥匙：网页登录用，也是身体调 relay 用。
+# 自己生成一个随机的（别用别人的、别用弱口令）：
+#     python -c "import secrets; print(secrets.token_urlsafe(32))"
+RELAY_SECRET=<在这儿填一串随机字符串>
+
+# 显示名（推送标题、旁白里出现）。第一阶段是临时人偶，随便起。
+RELAY_AI_NAME=临时人偶
+RELAY_HUMAN_NAME=Lily
+
+# 中转站（OpenAI 兼容）。这就是你"换中转站不用改代码"的地方——
+# 以后想换，改这三个值即可；重启发一次就行。
+# 更强的做法：先留空这里，等服务起来后在网页「设置」里写，
+# 那样会存进 /data 的运行时配置，换站连重启都不用（见 deploy/README.md）。
+LLM_API_BASE=https://你的中转站域名/v1
+LLM_API_KEY=<在这儿填 key>
+LLM_MODEL=你的模型名
+
+# 备用链（可选）：主站 401/403/429/5xx 时自动顺次切下一个
+# LLM_API_BASE_2= / LLM_API_KEY_2= / LLM_MODEL_2=
+# LLM_API_BASE_3= ...
+
+# 临时人偶的说话方式（第一阶段用；**不要**把 KaelLife 的 PERSONA_PROMPT 贴进来）
+PERSONA=你是一个用于验收的临时人偶，用中文简短回答。
+
+# ── 锁屏推送（可选；不填 = 只能用网页看，锁屏收不到）────────────────────
+# 公钥（可公开）：见 _reference/vapid/public_key.txt
+VAPID_PUBLIC_KEY=<粘贴 public_key.txt 里那一行>
+# 私钥：Zeabur 面板不好贴多行 PEM，所以约定用 base64 单行。
+# 内容 = private_key.b64 里的那一整行（私有，别外传）。
+VAPID_PRIVATE_PEM_B64=<粘贴 private_key.b64 里那一行>
+VAPID_SUBJECT=mailto:你的邮箱@example.com
+
+# ── 不要填的（entrypoint.sh 会自动设好，填了反而容易出错）──────────────────
+# PORT                  Zeabur 自己注入，入口脚本读它
+# RELAY_DB              → /data/relay.db
+# RELAY_UPLOAD_DIR      → /data/uploads
+# RELAY_BRAIN_FILE      → /data/brain_target
+# LOOP_CONFIG           → /data/api_loop.config.json
+# VAPID_PRIVATE_PEM     → /data/private_key.pem
+# RELAY_URL             → http://127.0.0.1:$PORT
+# RELAY_LOOP_INGEST_URL → http://127.0.0.1:3020/loop/ingest
+# RELAY_PUBLIC_PREFIX   → 默认就是 /relay，前端写死了这个前缀，别改
+#
+# ⚠️ 第一阶段：一个 MCP / KaelLife 相关的变量都不要加。
+#    房子先把"能住人"验证完，第二阶段再谈接身体。

@@ -1,0 +1,26 @@
+# 构建镜像时不需要进上下文的东西
+.git
+.gitignore
+.github
+
+# Claude Code 专用通道，我们是自托管 API 身体，用不到（Node 项目，别拖慢构建）
+channel/
+
+# 本机/服务器上的运行时数据，绝不能进镜像
+*.db
+brain_target
+api_loop.config.json
+private_key.pem
+uploads/
+relay.env
+.env
+
+# Python 编译缓存
+__pycache__/
+*.pyc
+
+# 编辑器/系统垃圾
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
