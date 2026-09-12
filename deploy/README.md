@@ -9,7 +9,8 @@
 | | 出处 | 我们改了吗 |
 |---|---|---|
 | `backend/app.py` | Tidal_Echo 原生（relay 后端） | **一个字都没改** |
-| `web/` | Tidal_Echo 原生（PWA 前端） | **一个字都没改** |
+| `web/index.html` | Tidal_Echo 原生（PWA 前端） | **只改了 4 处 UI/登录体验，见下节** |
+| `web/` 其余文件 | Tidal_Echo 原生（PWA 前端） | **一个字都没改** |
 | `examples/api_loop.py` | Tidal_Echo 原生（服务器端 API 身体） | **一个字都没改** |
 | `channel/` | Tidal_Echo 原生（Claude Code 专用） | 用不到，`.dockerignore` 排除 |
 | `Dockerfile` | **我们加的** | 新增 |
@@ -18,10 +19,14 @@
 
 判断方法（任何时候都能自查）：
 ```bash
-git diff --stat e7c9bf5 -- backend/ web/ examples/    # 应当为空
-git diff --stat e7c9bf5                                # 应只有新增文件
+git diff --stat e7c9bf5 -- backend/ examples/ channel/   # 应当为空
+git diff --stat e7c9bf5 -- web/                          # 只应出现 index.html（4 处家装）
+git diff --stat e7c9bf5                                  # 新增文件 + 上述前端改动
 ```
 `e7c9bf5` = 从上游 fork 时的那个 commit。
+
+> ⚠️ 2026-09-12 起，`web/index.html` **不再是零改动**（房子跑通后按 Lily 的反馈做了 4 处家装）。
+> 下一节逐条列出，全部是 UI 与登录体验，**不含任何 KaelLife 逻辑**。
 
 ## 三处缝，各补了什么
 
@@ -39,7 +44,7 @@ Tidal_Echo 的前端把 API 基址写成同源相对路径 `/relay`（`API_BASE`
 （`index.html` / `album.html` / `sw.js`），而且 `sw.js` 里「不拦截 /relay/」这条规则
 **依赖这个前缀存在**——改前端就得连 Service Worker 的缓存策略一起动，
 一不小心会让 SSE 流被 Service Worker 缓存住（极难排查）。
-从后端剥前缀 = 前端零改动、SW 策略零风险。
+从后端剥前缀 = 不用为「前缀」这件事动前端一行代码、SW 策略零风险。
 
 > ⚠️ 这一层用的是 Starlette 的 `BaseHTTPMiddleware`，它在 SSE 上有过"悄悄缓冲"的坏名声。
 > **已实测排除**：挂 50 秒长连接，relay 每 15 秒的心跳逐块到达，时刻为
@@ -92,6 +97,20 @@ python -m uvicorn serve:app --host 0.0.0.0 --port $PORT --app-dir /app/deploy
 
 **换句话说**：第二阶段不需要改这个目录里的任何东西，只需要让 relay 把消息
 推给另一个进程/服务。这也是「不要在第一阶段把两套东西搅在一起」的物理保证。
+
+## `web/index.html` 的 4 处改动（**唯一被动过的原生文件**）
+
+2026-09-12 房子跑通后按 Lily 的反馈做的"家装"。**全部是 UI 与登录体验，不含任何 KaelLife 逻辑**，
+也不参与 relay 与 AI 侧的任何路径 —— 第二阶段换身体时不受影响。
+
+| # | 改了什么 | 位置 | 为什么 |
+|---|---|---|---|
+| 1 | 隐藏顶栏「终端视图」与「语音通话」两个按钮 | CSS 新增一条 `.header-actions .topbtn.terminal, .topbtn.call{display:none}` | 终端只是同一段对话的命令行皮肤（工具步骤聊天页已有 ✧ 折叠块）；语音是原版占位假按键。**DOM 与 JS 一行未删**，想恢复删掉那行选择器即可 |
+| 2 | 纪念日 `SINCE`：`2026/01/01` → `2026/07/01` | `CONFIG.SINCE` | 原值是作者占位值；7/1 是 Lily & Kael 认识日 |
+| 3 | 默认名 `AI_NAME`：`Claude` → `Kael`（并同步登录页/空状态/顶栏/个人信息面板的静态兜底文案） | `CONFIG.AI_NAME` + 静态 HTML | 原版"备注名"只改聊天页顶栏，登录页等仍写死 Claude |
+| 4 | 登录密钥**自动清洗不可见字符**，且验证失败**不再清空输入框** | `sanitizeSecret()` / `showLogin()` / login submit | 从备忘录·微信复制密钥会夹带零宽空格/BOM/NBSP/软连字符等肉眼不可见字符 → 后端 401；原版只 `.trim()`（去不掉中间与零宽），失败后还清空输入框逼用户重打整串 |
+
+其中 2、3 各是一处常量，改回原值即可；1 是一行 CSS；4 新增一个纯函数（无副作用、不调用后端）。
 
 ## 相关文件
 

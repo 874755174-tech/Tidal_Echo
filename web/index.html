@@ -261,6 +261,19 @@
   .topbtn svg{ width:24px; height:24px; display:block; }
   .topbtn.more svg{ width:22px; height:22px; }
   .topbtn.terminal.active{ color:var(--accent); }
+
+  /* ── 顶栏精简（Lily 的房子 · 2026-09-12）─────────────────────────────
+     只留「API 窗口」+「⋯ 个人信息」两个入口。
+     · 收起「终端视图」：它是同一段对话的命令行皮肤
+       （源码注释：same conversation, different skin），工具步骤在聊天页
+       已有 ✧ 折叠块显示，属重复入口。
+     · 收起「语音通话」：原版占位假按键，点开没有后端（源码 aria-label 即「占位」）。
+     ⚠️ 两个按钮的 DOM 与 JS 一行未删，只是隐藏。想让谁回来，
+        删掉下面参数里对应的那行选择器即可（改一行，不用动逻辑）。
+     原版请参考：.topbtn.sessions / .topbtn.terminal / .topbtn.call */
+  .header-actions .topbtn.terminal,
+  .header-actions .topbtn.call{ display:none; }
+
   .session-pop{
     position:absolute;
     right: calc(var(--side-pad) + 34px);
@@ -1831,8 +1844,8 @@
 <!-- ── Login ── -->
 <div class="login" id="login">
   <div class="orb"></div>
-  <h1>Claude</h1>
-  <p class="sub">输入连接密钥,进入你和Claude的频道。</p>
+  <h1>Kael</h1>
+  <p class="sub">输入连接密钥，进入你和Kael的频道。</p>
   <form id="loginForm" autocomplete="off">
     <input id="secretInput" type="password" inputmode="text" placeholder="连接密钥" autocomplete="off" spellcheck="false">
     <button type="submit">连接</button>
@@ -1848,7 +1861,7 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
     </button>
     <div class="peerpill">
-      <span class="name" id="peerName">Claude</span>
+      <span class="name" id="peerName">Kael</span>
       <span class="status" id="status">connecting…</span>
     </div>
     <div class="header-actions" aria-label="通话和更多操作">
@@ -1940,8 +1953,8 @@
         <button class="profile-avatar" id="profileAvatarBtn" type="button" aria-label="更改头像"></button>
         <div class="profile-id-copy">
           <div class="profile-name-row">
-            <h3 id="profileName">Claude</h3>
-            <input id="profileNameInput" class="hidden" type="text" maxlength="16" autocomplete="off" spellcheck="false" placeholder="Claude">
+            <h3 id="profileName">Kael</h3>
+            <input id="profileNameInput" class="hidden" type="text" maxlength="16" autocomplete="off" spellcheck="false" placeholder="Kael">
             <button class="profile-name-edit" id="profileNameEdit" type="button" aria-label="编辑备注">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
             </button>
@@ -2229,9 +2242,9 @@
 /* ── identity / branding — the ONE place to set names + app title ── */
 const CONFIG = {
   APP_NAME:   "Tidal Echo",  // app + menu title (and manifest, set there too)
-  AI_NAME:    "Claude",       // your AI companion's display name (header / call / push / narration)
+  AI_NAME:    "Kael",         // your AI companion's display name (header / call / push / narration)
   HUMAN_NAME: "你",           // how you're referred to in narration (rarely shown)
-  SINCE:      "2026/01/01",   // "together since" date YYYY/MM/DD for the menu counter ("" hides it)
+  SINCE:      "2026/07/01",   // "together since" date YYYY/MM/DD for the menu counter ("" hides it) · Lily & Kael 认识日
 };
 const AI_NAME = CONFIG.AI_NAME, HUMAN_NAME = CONFIG.HUMAN_NAME, APP_NAME = CONFIG.APP_NAME;
 
@@ -2240,7 +2253,7 @@ const USE_MOCK  = false;          // true = self-contained demo with fake data (
 const LS_KEY    = "companion_secret";
 
 /* ── 状态 ── */
-let secret  = localStorage.getItem(LS_KEY);
+let secret  = sanitizeSecret(localStorage.getItem(LS_KEY)) || null;   // 也清洗，防旧的脏值留在本地
 let lastId  = 0;
 const seen  = new Set();
 let es      = null;     // EventSource(或 MockEventSource)
@@ -5538,18 +5551,33 @@ function handle401(){
   showLogin("密钥不对,请重新输入。");
 }
 
+/* ── 密钥清洗（Lily 的房子 · 2026-09-12）────────────────────────────────
+   从备忘录 / 微信 / 网页复制密钥时最容易带进"看不见的字符"：
+   零宽空格 U+200B、零宽连字 U+200D、BOM U+FEFF、不换行空格 U+00A0、
+   软连字符 U+00AD、方向控制符 U+200E/200F/202A-202E、词连接符 U+2060-2064。
+   它们占位但无形状 —— 肉眼核对三遍也看不出差别，却会让后端比对失败（401）。
+   这就是"密钥明明没错却提示输入失败"的根因。
+   统一清洗：删掉所有空白 + 上述不可见字符。密钥本身不含空白，清洗是安全的。
+   原版只做了 .trim()（只去首尾空白，去不掉中间和零宽字符）。 */
+function sanitizeSecret(raw){
+  return String(raw == null ? "" : raw)
+    .replace(/[\s\u00A0\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g, "");
+}
+
 function showLogin(msg){
   appEl.classList.add("hidden");
   loginEl.classList.remove("hidden");
   $("#loginErr").textContent = msg || "";
-  $("#secretInput").value = "";
-  setTimeout(() => $("#secretInput").focus(), 80);
+  // 不清空输入框：验证失败时保留刚粘贴的密钥，避免整串重打（原版在这里清空）
+  setTimeout(() => { try{ $("#secretInput").focus({ preventScroll:true }); }catch(_){ $("#secretInput").focus(); } }, 80);
 }
 
 $("#loginForm").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const val = $("#secretInput").value.trim();
+  const raw = $("#secretInput").value;
+  const val = sanitizeSecret(raw);          // 见上方 sanitizeSecret：清掉粘贴带来的不可见字符
   if (!val) return;
+  if (val !== raw.trim()) $("#loginErr").textContent = "已自动去掉粘贴时带进来的隐藏字符。";
   const btn = e.target.querySelector("button");
   btn.disabled = true; btn.textContent = "连接中…";
   secret = val;
