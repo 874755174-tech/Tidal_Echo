@@ -169,7 +169,11 @@ def req(url: str, *, token: str | None = None):
 
 def scenario(name: str, *, mode: str, prefix: str = "") -> None:
     print(f"\n【{name}】")
-    tmp = REPO / "_runtime" / f"fb-{mode or 'x'}-{abs(hash(prefix)) % 9999}"
+    # ⚠️ 运行目录放**系统 temp**（2026-09-13 改）：以前是 REPO/_runtime，
+    #    会往仓库里落测试数据库。虽然这里不删东西，但测试不该污染项目目录。
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp(prefix=f"kaelhome-fb-{mode or 'x'}-"))
     tmp.mkdir(parents=True, exist_ok=True)
     seed(tmp)
 
@@ -238,7 +242,10 @@ def frontend_notice() -> None:
     html = (REPO / "web" / "index.html").read_text(encoding="utf-8")
     check("sessionNotice" in html, "提示元素已加进页面")
     check("setSessionNotice" in html, "提示函数已定义")
-    check("d.fallback" in html or "d && d.fallback" in html,
+    # 2026-09-13：前端改成"新端点优先、退回老端点"，fallback 的文案抽成了
+    # FALLBACK_NOTICE 常量并在两处按 `d && d.fallback` 判断。断言跟着改，
+    # 但**验的还是同一件事**：前端必须读后端的 fallback 标记。
+    check("FALLBACK_NOTICE" in html and "d.fallback" in html,
           "会读后端的 fallback 标记")
     check("暂时读不到会话列表" in html, "连接失败时有可读的中文提示")
     check("AI 身体暂时不在" in html, "降级时说明了原因")
@@ -248,7 +255,6 @@ def frontend_notice() -> None:
 
 
 def main() -> int:
-    (REPO / "_runtime").mkdir(exist_ok=True)
     print("=" * 78)
     print("会话列表兜底 · 三场景验收")
     print("=" * 78)

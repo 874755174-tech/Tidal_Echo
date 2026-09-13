@@ -1,0 +1,41 @@
+会话归档/删除/改名验收：40/40 通过
+[PASS] 种子数据已写好（5 条物理消息）
+[PASS] 列表含三个会话（legacy + A + B）
+[PASS] 会话 A 带消息数 count=2
+[PASS] 归档 sess-A 成功
+[PASS] 归档后列表里没有 sess-A
+[PASS] 🔴 归档后数据库物理行数不变（消息没被删）
+[PASS] 🔴 归档后 sess-A 消息数仍是 2
+[PASS] 归档列表里能找到 sess-A
+[PASS] 取消归档成功
+[PASS] 🔴 恢复后 sess-A 回到列表（归档可逆）
+[PASS] 恢复后消息数仍是 2
+[PASS] 改名 sess-B 成功
+[PASS] 改名后标题持久化
+[PASS] 🔴 虚拟会话 __legacy__ 也能改名（修复原版 404）
+[PASS] 虚拟会话标题已持久化
+[PASS] 空标题被拒
+[PASS] 不存在的会话改名 → not_found
+[PASS] count 接口返回 sess-B 有 1 条
+[PASS] 清空 sess-B 成功
+[PASS] 清空后列表里没有 sess-B
+[PASS] 🔴 清空后物理行数仍不变（标记式删除，可人工恢复）
+[PASS] 清空 sess-B 不影响 __legacy__ 与 sess-A
+[PASS] relay 能启动
+[PASS] 🔴 无密钥 GET /app/sessions/manage → 401
+[PASS] 🔴 无密钥 GET /app/sessions/manage/archived → 401
+[PASS] 🔴 无密钥 POST /app/sessions/manage/archive → 401
+[PASS] 🔴 无密钥 POST /app/sessions/manage/purge → 401
+[PASS] 🔴 无密钥 POST /app/sessions/manage/rename → 401
+[PASS] 🔴 错误密钥 GET manage → 401
+[PASS] 🔴 错误密钥 purge → 401
+[PASS] 正确密钥 GET manage → 200
+[PASS] 返回里含 sessions 数组
+[PASS] 正确密钥 rename __legacy__ → 200
+[PASS] HTTP 改名已生效
+[PASS] 正确密钥 archive → 200
+[PASS] HTTP 归档后列表无 sess-A
+[PASS] HTTP 恢复后 sess-A 回来
+[PASS] 带 /relay 前缀也能读列表
+[PASS] 原版 /app/history 未受影响 → 200
+[PASS] 原版 /healthz 仍未鉴权 → 200

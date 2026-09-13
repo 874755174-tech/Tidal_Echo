@@ -72,14 +72,16 @@ def req(path, token=None, method="GET", body=None, timeout=8):
         return -1, f"{type(e).__name__}: {e}"
 
 
-RUN = os.path.join(ROOT, "_runtime_sess")
+# ⚠️ 运行目录放**系统 temp**，不要放项目文件夹里。
+#    2026-09-13 踩过：以前这里是 `ROOT/_runtime_sess`，脚本开头的
+#    `os.remove(...)` 会删项目目录里的文件，被沙箱拦成"批量删除"并要求
+#    用户授权 —— 一个纯测试脚本不该让人确认删东西。tempdir 每次新建，
+#    既不用删、也不会污染仓库（tempfile.mkdtemp 已保证唯一）。
+import tempfile
+
+RUN = tempfile.mkdtemp(prefix="kaelhome-sesscheck-")
 os.makedirs(RUN, exist_ok=True)
 DB = os.path.join(RUN, "relay.db")
-for f in ("relay.db", "relay.db-wal", "relay.db-shm"):
-    try:
-        os.remove(os.path.join(RUN, f))
-    except OSError:
-        pass
 
 ENV = os.environ.copy()
 ENV.update({

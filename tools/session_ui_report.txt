@@ -1,0 +1,41 @@
+会话前端（归档/删除/改名）验收：40/40 通过
+[PASS] 调用了 /app/sessions/manage（不再依赖 AI 身体）
+[PASS] 列表里出现了 sess-A
+[PASS] 列表里出现了 sess-B
+[PASS] 🔴 会话条目有「归档」按钮
+[PASS] 🔴 会话条目有「删除」按钮
+[PASS] 会话条目仍有「改名」按钮
+[PASS] 🔴 虚拟会话 __legacy__ 也有改名按钮（原版这里没有）
+[PASS] 条目右侧用的是新的 .session-acts 容器
+[PASS] 消息数显示成「N 条消息」
+[PASS] 能找到 sess-B 的删除按钮
+[PASS] 🔴 点删除后弹出了二次确认层
+[PASS] 确认层里写了会话名
+[PASS] 🔴 确认层里写了「将删除 N 条消息」（真的去查了 count）
+[PASS] 确认层说明了「归档可以留后路」
+[PASS] 确认按钮文案是「删除」
+[PASS] 危险按钮带了 danger 样式
+[PASS] 🔴 点「取消」后确认层关闭
+[PASS] 🔴 点「取消」后会话数没变（没有误删）
+[PASS] 点「取消」后没有发出 purge 请求
+[PASS] 已把当前会话切到 sess-B
+[PASS] 🔴 确认后发出了 purge 请求
+[PASS] 🔴 sess-B 已从后端列表消失
+[PASS] 🔴 删除当前会话后自动切到了仍存在的会话
+[PASS] 界面列表里也没有 sess-B 了
+[PASS] 能找到 sess-A 的归档按钮
+[PASS] 归档也会先弹二次确认
+[PASS] 归档的确认按钮不带 danger（它是安全操作）
+[PASS] 🔴 归档后 sess-A 离开主列表
+[PASS] 🔴 归档后 sess-A 进入归档区
+[PASS] 🔴 归档**没有**删除任何会话（总数不变）
+[PASS] 归档后归档入口显示了
+[PASS] 归档区列出了 sess-A
+[PASS] 归档区有「恢复」按钮
+[PASS] 🔴 恢复后 sess-A 回到主列表
+[PASS] 恢复后归档区里没有 sess-A 了
+[PASS] 🔴 改名走的是 /app/sessions/manage/rename
+[PASS] 🔴 改名没有走 PATCH /app/sessions/{id}（那条对 __legacy__ 必然 404）
+[PASS] 🔴 虚拟会话 __legacy__ 的名字真的改了
+[PASS] 🔴 删掉最后一个会话后回落到 __legacy__（回到主页）
+[PASS] 删光后会话面板关掉了

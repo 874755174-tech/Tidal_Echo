@@ -31,6 +31,11 @@ backend/app.py 原样使用（`import app`），原来的行为一个字都没�
      这里补一层：转发失败时直接从 messages 表把列表算出来。
      → 详细说明见 deploy/sessions_fallback.py 顶部注释。
 
+  4) 会话归档 / 恢复 / 清空 / 改名（sessions_manage.py）
+     原版的「改名」也是转发问身体的；虚拟会话（__legacy__）永远 404。
+     这里把这四件事做成数据库直读直写，**完全不走身体**。
+     → 详细说明（含"归档 vs 清空"的语义区别）见 deploy/sessions_manage.py 顶部注释。
+
 ⚠️ 中间件注册顺序（**实测结论**：Starlette 的 `app.user_middleware` 是「最外层在前」，
    而 `add_middleware` 是往列表头部插 → **先注册的跑在外层**）
    实际栈：
@@ -78,6 +83,13 @@ PUBLIC_PREFIX = "/" + (relay.PUBLIC_PREFIX or "").strip("/")
 import sessions_fallback  # noqa: E402
 
 sessions_fallback.install(relay, public_prefix=PUBLIC_PREFIX)
+
+# ── 会话归档 / 恢复 / 清空 / 改名（不依赖 AI 身体）──────────────────────────
+# 纯新增路由（/app/sessions/manage/*），不覆盖原版任何端点。
+# 每个端点自己 check_auth，不依赖中间件顺序（fail-closed）。
+import sessions_manage  # noqa: E402
+
+sessions_manage.install(relay, public_prefix=PUBLIC_PREFIX)
 
 
 @relay.app.middleware("http")

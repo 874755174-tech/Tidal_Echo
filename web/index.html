@@ -100,6 +100,9 @@
     --slider-thumb: #44627b;
     --info-ring: rgba(143,162,176,.38);
     --status-dot: #5fbf8f;
+    /* 破坏性操作（删除会话等）用的低饱和赭红 —— 与盐系手帐风一致，不刺眼。
+       单独定义在 token 里，是为了两个主题共用同一个"危险色"。 */
+    --danger: #c0553f;
     /* voice call (speaking overlay) */
     --call-glass-top: rgba(255,255,255,.46);
     --call-glass-bot: rgba(255,255,255,.20);
@@ -328,6 +331,59 @@
   }
   .session-rename:hover{ color:var(--accent); background:var(--seg-track); }
   .session-rename svg{ width:15px; height:15px; display:block; }
+  /* ── 会话操作按钮组（Lily 的房子 · 2026-09-13）────────────────────────
+     每个会话条目右侧三个图标：改名 / 归档 / 删除。
+     原版只有"改名"一个，且虚拟会话（__legacy__）连它都没有。
+     现在三个都能用，因为归档 / 删除 / 改名全走数据库，不再问 AI 身体。 */
+  .session-acts{ display:flex; align-items:center; gap:1px; }
+  .session-act{
+    border:0; background:transparent; color:var(--text-faint); width:28px; height:28px;
+    border-radius:50%; display:grid; place-items:center; cursor:pointer; padding:0;
+    flex:none;
+  }
+  .session-act:hover{ color:var(--accent); background:var(--seg-track); }
+  .session-act svg{ width:15px; height:15px; display:block; }
+  .session-act.danger:hover{ color:var(--danger, #c4553f); }
+  /* 归档区：默认收起来，点"查看归档"才展开 */
+  .session-arch-wrap{ margin-top:6px; border-top:1px solid var(--seg-line); padding-top:6px; }
+  .session-arch-wrap[hidden]{ display:none !important; }
+  .session-arch-toggle{
+    border:0; background:transparent; color:var(--text-faint); font:inherit;
+    font-size:11.5px; padding:5px 4px; cursor:pointer; width:100%; text-align:left;
+  }
+  .session-arch-toggle:hover{ color:var(--accent); }
+  .session-arch-title{ font-size:11px; color:var(--text-faint); padding:4px 4px 2px; }
+  .session-item.archived .session-name{ color:var(--text-soft); }
+  .session-item.archived{ opacity:.82; }
+  /* ── 二次确认弹层（删除 / 归档前必须过这一关）────────────────────────
+     Lily 明确要求"删除前需要二次确认"。这里不用 window.confirm：
+     · 要显示"将删除 N 条消息"这种算出来的信息
+     · 要能在弹层里说明"归档可恢复、删除不可逆"的区别
+     · iOS 上原生 confirm 样式割裂，且 SW 环境下偶发被吞 */
+  .confirm-mask{
+    position:fixed; inset:0; z-index:340;
+    display:grid; place-items:center; padding:24px;
+    background:rgba(16,26,38,.42);
+    -webkit-backdrop-filter:blur(3px); backdrop-filter:blur(3px);
+  }
+  .confirm-mask[hidden]{ display:none !important; }
+  .confirm-card{
+    width:min(92vw, 360px); padding:20px 20px 14px;
+    border-radius:20px; background:var(--panel-bg);
+    border:1px solid var(--card-line);
+    box-shadow:0 24px 60px rgba(30,45,62,.26);
+  }
+  .confirm-title{ font-size:15.5px; margin:0 0 8px; color:var(--text); }
+  .confirm-body{ font-size:13px; line-height:1.6; color:var(--text-soft); margin:0 0 4px; }
+  .confirm-note{ font-size:11.5px; line-height:1.55; color:var(--text-faint); margin:8px 0 0; }
+  .confirm-acts{ display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
+  .confirm-btn{
+    border:1px solid var(--seg-line); border-radius:999px; padding:8px 16px;
+    background:var(--seg-track); color:var(--text-soft); font:inherit; font-size:13px; cursor:pointer;
+  }
+  .confirm-btn.primary{ background:var(--accent); border-color:var(--accent); color:#fff; }
+  .confirm-btn.danger{ background:var(--danger, #c4553f); border-color:var(--danger, #c4553f); color:#fff; }
+  .confirm-btn:active{ transform:scale(.98); }
   .terminal-panel{
     position:fixed;
     inset:0;
@@ -1896,11 +1952,27 @@
   </header>
   <div class="session-pop" id="sessionPop" hidden>
     <div class="session-head">
-      <div class="session-title">API 窗口</div>
+      <div class="session-title">会话</div>
       <button class="session-new" id="sessionNewBtn" type="button">新对话</button>
     </div>
     <div class="session-notice" id="sessionNotice" hidden></div>
     <div class="session-list" id="sessionList"></div>
+    <div class="session-arch-wrap" id="sessionArchWrap" hidden>
+      <button class="session-arch-toggle" id="sessionArchToggle" type="button">查看归档</button>
+      <div class="session-arch-body" id="sessionArchBody" hidden></div>
+    </div>
+  </div>
+  <!-- 二次确认弹层（删除 / 归档）。默认 hidden，只有点按钮才出现。 -->
+  <div class="confirm-mask" id="confirmMask" hidden>
+    <div class="confirm-card" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <h3 class="confirm-title" id="confirmTitle"></h3>
+      <p class="confirm-body" id="confirmBody"></p>
+      <p class="confirm-note" id="confirmNote"></p>
+      <div class="confirm-acts">
+        <button class="confirm-btn" id="confirmCancel" type="button">取消</button>
+        <button class="confirm-btn primary" id="confirmOk" type="button">确定</button>
+      </div>
+    </div>
   </div>
   <main class="scroll" id="scroll">
     <div class="empty" id="empty">
@@ -2312,6 +2384,9 @@ const modelSeg = $("#modelSeg"), effortSeg = $("#effortSeg"), contextSlider = $(
 const resetRow = $("#resetRow"), swapRow = $("#swapRow"), resumeRow = $("#resumeRow");
 const statusCopy = $("#statusCopy"), statusSidEl = $("#statusSid"), statusUsedEl = $("#statusUsed");
 const sessionBtn = $("#sessionBtn"), sessionPop = $("#sessionPop"), sessionList = $("#sessionList"), sessionNewBtn = $("#sessionNewBtn"), sessionNotice = $("#sessionNotice");
+/* 归档区 + 二次确认弹层（Lily 的房子 · 2026-09-13 新增） */
+const sessionArchWrap = $("#sessionArchWrap"), sessionArchToggle = $("#sessionArchToggle"), sessionArchBody = $("#sessionArchBody");
+const confirmMask = $("#confirmMask"), confirmTitle = $("#confirmTitle"), confirmBody = $("#confirmBody"), confirmNote = $("#confirmNote"), confirmOk = $("#confirmOk"), confirmCancel = $("#confirmCancel");
 const terminalBtn = $("#terminalBtn"), terminalPanel = $("#terminalPanel"), terminalBack = $("#terminalBack"), terminalLog = $("#terminalLog"), terminalForm = $("#terminalForm"), terminalInput = $("#terminalInput"), terminalSession = $("#terminalSession");
 const brainSeg = $("#brainSeg"), brainHint = $("#brainHint");
 
@@ -2325,6 +2400,13 @@ const LEGACY_SESSION_ID = "__legacy__";
 const TERMINAL_WRAP = "[companion:pseudo-terminal]";
 let apiSessions = [];
 let activeApiSession = LEGACY_SESSION_ID;
+// 已归档的会话（Lily 的房子 · 2026-09-13）：归档只是"收起来"，不删消息。
+// 由 loadArchivedSessions() 从 /app/sessions/manage/archived 拉取。
+let archivedSessions = [];
+/* 后端用 fallback=true 表示"这份列表是它从聊天记录里算出来的，AI 身体不在"。
+   改名 / 归档 / 删除现在已由新端点接管、不依赖身体，所以提示里只说
+   "新建会话要等它回来"，不再笼统说"这些都用不了"。 */
+const FALLBACK_NOTICE = "这份列表是从聊天记录里整理出来的（AI 身体暂时不在）。翻看、切换、改名、归档、删除都能用；新建会话要等它回来。";
 
 function currentTheme(){
   const t = document.documentElement.getAttribute("data-theme");
@@ -3427,24 +3509,104 @@ function setSessionNotice(text, { warn = false } = {}){
 }
 function renderSessionList(){
   if (!sessionList) return;
-  const rows = [{ id:LEGACY_SESSION_ID, title:"旧主线 / Desktop 记录", since_id:0, virtual:true }].concat(apiSessions || []);
+  // __legacy__ 不再单独"伪造"一条：新的 /app/sessions/manage 已经把无标签消息
+  // 归成一个真实条目返回（title 空时后端给"旧主线 / Desktop 记录"）。
+  // 只有列表为空、或走了老端点（可能没有 legacy 项）时才补一条兜底，
+  // 免得"更早的记录"整段消失。
+  const raw = Array.isArray(apiSessions) ? apiSessions.slice() : [];
+  const hasLegacy = raw.some((s) => (s.id || "") === LEGACY_SESSION_ID);
+  const rows = hasLegacy ? raw : [{ id:LEGACY_SESSION_ID, title:"旧主线 / Desktop 记录", since_id:0, virtual:true }].concat(raw);
   sessionList.innerHTML = rows.map((s) => {
     const active = (s.id || "") === activeApiSession;
-    const meta = s.virtual ? "没有 api_session 标记的记录" : `since #${s.since_id || 0}`;
-    const rename = s.virtual ? "" : `<button class="session-rename" type="button" data-rename="${escapeHtml(s.id || "")}" aria-label="改名" title="改名">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
-    </button>`;
-    return `<div class="session-item${active ? " active" : ""}" data-session="${escapeHtml(s.id || "")}" role="button" tabindex="0">
+    const sid = s.id || "";
+    // 计数：新端点会给 count；老端点没有就退回 since_id 的说法
+    const meta = (typeof s.count === "number")
+      ? `${s.count} 条消息`
+      : (sid === LEGACY_SESSION_ID ? "没有 api_session 标记的记录" : `since #${s.since_id || 0}`);
+    const icon = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+    const btnRename = `<button class="session-act" type="button" data-rename="${escapeHtml(sid)}" aria-label="改名" title="改名">${icon('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>')}</button>`;
+    // 归档 = 可逆（消息一条不动）；删除 = 打标记（物理行也保留，但产品上算删掉）
+    const btnArchive = `<button class="session-act" type="button" data-archive="${escapeHtml(sid)}" aria-label="归档" title="归档（可恢复）">${icon('<path d="M3 7h18"/><path d="M5 7v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7"/><path d="M9 7V4h6v3"/><path d="M10 12h4"/>')}</button>`;
+    const btnDelete = `<button class="session-act danger" type="button" data-delete="${escapeHtml(sid)}" aria-label="删除" title="删除">${icon('<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6v14a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>')}</button>`;
+    return `<div class="session-item${active ? " active" : ""}" data-session="${escapeHtml(sid)}" role="button" tabindex="0">
       <span class="session-main">
         <span class="session-name">${escapeHtml(s.title || "新对话")}</span>
         <span class="session-meta">${escapeHtml(meta)}</span>
       </span>
-      ${rename}
+      <span class="session-acts">${btnRename}${btnArchive}${btnDelete}</span>
+    </div>`;
+  }).join("");
+  // 归档入口只在"真的有归档会话"时才露出（首屏不占位置）
+  if (sessionArchWrap && !archivedSessions.length) sessionArchWrap.hidden = true;
+}
+async function renderArchivedList(){
+  if (!sessionArchBody) return;
+  if (!archivedSessions.length){
+    sessionArchBody.innerHTML = `<div class="session-arch-title">还没有归档的会话</div>`;
+    return;
+  }
+  sessionArchBody.innerHTML = archivedSessions.map((s) => {
+    const sid = s.id || "";
+    const meta = (typeof s.count === "number") ? `${s.count} 条消息` : "";
+    return `<div class="session-item archived" data-session="${escapeHtml(sid)}" role="button" tabindex="0">
+      <span class="session-main">
+        <span class="session-name">${escapeHtml(s.title || "新对话")}</span>
+        <span class="session-meta">${escapeHtml(meta)}</span>
+      </span>
+      <span class="session-acts">
+        <button class="session-act" type="button" data-unarchive="${escapeHtml(sid)}" aria-label="恢复" title="恢复">${'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18"/><path d="M5 7v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7"/><path d="M9 7V4h6v3"/><path d="M12 17v-5"/><path d="M9.5 14.5 12 12l2.5 2.5"/></svg>'}</button>
+      </span>
     </div>`;
   }).join("");
 }
+/* ── 二次确认弹层 ─────────────────────────────────────────────────────────
+   返回 Promise<boolean>。Lily 的要求是"删除前需要二次确认"，所以所有破坏性
+   操作都要 await askConfirm(...) 之后再动手，且**默认焦点在"取消"上**。 */
+let confirmResolver = null;
+function askConfirm({ title, body, note = "", okText = "确定", danger = false }){
+  if (!confirmMask) return Promise.resolve(window.confirm(title || "确定？"));
+  if (confirmTitle) confirmTitle.textContent = title || "";
+  if (confirmBody) confirmBody.textContent = body || "";
+  if (confirmNote){ confirmNote.textContent = note; confirmNote.hidden = !note; }
+  if (confirmOk){
+    confirmOk.textContent = okText;
+    confirmOk.classList.toggle("danger", !!danger);
+    confirmOk.classList.toggle("primary", !danger);
+  }
+  confirmMask.hidden = false;
+  // 默认焦点给"取消"：删东西时手滑按回车不该生效
+  setTimeout(() => { try{ confirmCancel && confirmCancel.focus(); }catch(_){} }, 0);
+  return new Promise((resolve) => { confirmResolver = resolve; });
+}
+function closeConfirm(result){
+  if (confirmMask) confirmMask.hidden = true;
+  const r = confirmResolver; confirmResolver = null;
+  if (r) r(!!result);
+}
+if (confirmOk) confirmOk.addEventListener("click", () => closeConfirm(true));
+if (confirmCancel) confirmCancel.addEventListener("click", () => closeConfirm(false));
+if (confirmMask) confirmMask.addEventListener("click", (e) => { if (e.target === confirmMask) closeConfirm(false); });
+document.addEventListener("keydown", (e) => {
+  if (confirmMask && !confirmMask.hidden && e.key === "Escape") closeConfirm(false);
+});
 function setSessionPopover(open){
   if (sessionPop) sessionPop.hidden = !open;
+  // 每次打开都刷一次归档区，避免显示过期内容
+  if (open && archivedSessions.length) renderArchivedList();
+}
+async function loadArchivedSessions(){
+  if (USE_MOCK || !secret) { archivedSessions = []; if (sessionArchWrap) sessionArchWrap.hidden = true; return; }
+  try{
+    const r = await fetch(`${API_BASE}/app/sessions/manage/archived`, { headers: authHeaders() });
+    if (r.status === 401){ handle401(); return; }
+    if (!r.ok) throw new Error("archived " + r.status);
+    const d = await r.json();
+    archivedSessions = Array.isArray(d.sessions) ? d.sessions : [];
+  }catch(_){
+    archivedSessions = [];   // 归档查不到不影响主列表
+  }
+  if (sessionArchWrap) sessionArchWrap.hidden = !archivedSessions.length;
+  await renderArchivedList();
 }
 async function loadSessions(){
   if (USE_MOCK || !secret){
@@ -3453,27 +3615,142 @@ async function loadSessions(){
     renderSessionList();
     return;
   }
+  // 优先用 /app/sessions/manage：它直读数据库，**不依赖 AI 身体**，
+  // 且带回 count（删除确认框要显示"将删除 N 条消息"）。
+  // 万一这个新端点不可用（比如还没部署），再退回原版 /app/sessions。
+  let usedManage = false;
   try{
-    const r = await fetch(`${API_BASE}/app/sessions`, { headers: authHeaders() });
+    const r = await fetch(`${API_BASE}/app/sessions/manage`, { headers: authHeaders() });
     if (r.status === 401){ handle401(); throw new Error("401"); }
-    if (!r.ok) throw new Error("sessions " + r.status);
-    const d = await r.json();
-    apiSessions = Array.isArray(d.sessions) ? d.sessions : [];
-    const saved = (() => { try{ return localStorage.getItem(SESSION_PICK_KEY) || ""; }catch(_){ return ""; } })();
-    const ids = new Set(apiSessions.map((s) => s.id));
-    activeApiSession = (saved === LEGACY_SESSION_ID || ids.has(saved)) ? saved : (d.active_session || LEGACY_SESSION_ID);
-    // 后端说了它是兜底算出来的 → 列表可用，但"新对话 / 改名 / 删除"这些
-    // 需要 AI 身体接手的事现在做不了，先讲清楚，别让人点了半天没反应。
-    setSessionNotice(d && d.fallback
-      ? "这份列表是从聊天记录里整理出来的（AI 身体暂时不在）。翻看和切换可以用，新对话 / 改名要等它回来。"
-      : "");
-  }catch(_){
-    // 不再静默：以前这里只是悄悄把列表清空，用户只会觉得"按钮怎么空了"。
-    apiSessions = [];
-    activeApiSession = LEGACY_SESSION_ID;
-    setSessionNotice("暂时读不到会话列表（连接不上）。下面显示的是更早的记录，消息本身不受影响。", { warn:true });
+    if (r.ok){
+      const d = await r.json();
+      apiSessions = Array.isArray(d.sessions) ? d.sessions : [];
+      usedManage = true;
+      // 新端点理论上不走兜底（它本来就直读数据库），但它也认 fallback 标记，
+      // 万一将来加了同样语义，这里照样能提示。
+      setSessionNotice(d && d.fallback ? FALLBACK_NOTICE : "");
+    }
+  }catch(e){
+    if (String(e && e.message) === "401") return;
   }
+  if (!usedManage){
+    try{
+      const r = await fetch(`${API_BASE}/app/sessions`, { headers: authHeaders() });
+      if (r.status === 401){ handle401(); throw new Error("401"); }
+      if (!r.ok) throw new Error("sessions " + r.status);
+      const d = await r.json();
+      apiSessions = Array.isArray(d.sessions) ? d.sessions : [];
+      // 后端说了它是兜底算出来的 → 列表可用，但"新建会话"这类还要身体接手的事
+      // 现在做不了，先讲清楚。（改名/归档/删除已由新端点接管，不受影响。）
+      setSessionNotice(d && d.fallback ? FALLBACK_NOTICE : "");
+    }catch(_){
+      // 不再静默：以前这里只是悄悄把列表清空，用户只会觉得"按钮怎么空了"。
+      apiSessions = [];
+      activeApiSession = LEGACY_SESSION_ID;
+      setSessionNotice("暂时读不到会话列表（连接不上）。下面显示的是更早的记录，消息本身不受影响。", { warn:true });
+      renderSessionList();
+      return;
+    }
+  }
+  const saved = (() => { try{ return localStorage.getItem(SESSION_PICK_KEY) || ""; }catch(_){ return ""; } })();
+  const ids = new Set(apiSessions.map((s) => s.id));
+  // 选中的会话可能已经不在了（刚被删/归档）→ 落回第一条，没有就回 __legacy__
+  activeApiSession = (saved === LEGACY_SESSION_ID || ids.has(saved))
+    ? saved
+    : (ids.has(LEGACY_SESSION_ID) ? LEGACY_SESSION_ID : (apiSessions[0] && apiSessions[0].id) || LEGACY_SESSION_ID);
+  await loadArchivedSessions();
   renderSessionList();
+}
+/* ── 会话写操作：全部走 /app/sessions/manage/*（不走 AI 身体）──────────── */
+async function managePost(path, payload){
+  const r = await fetch(`${API_BASE}${path}`, {
+    method:"POST",
+    headers:{ ...authHeaders(), "Content-Type":"application/json" },
+    body:JSON.stringify(payload || {})
+  });
+  if (r.status === 401){ handle401(); throw new Error("401"); }
+  let d = {};
+  try{ d = await r.json(); }catch(_){}
+  if (!r.ok) throw new Error((d && d.reason) || ("http " + r.status));
+  return d;
+}
+async function archiveSession(sessionId){
+  const item = apiSessions.find((s) => s.id === sessionId);
+  const ok = await askConfirm({
+    title: "归档这个会话？",
+    body: `「${(item && item.title) || sessionId}」将从列表里收起来。`,
+    note: "归档只是收起来，消息一条都不会动，随时可以恢复。",
+    okText: "归档"
+  });
+  if (!ok) return;
+  try{
+    await managePost("/app/sessions/manage/archive", { session_id: sessionId, archived: true });
+    showToast("已归档，可在「查看归档」里找回");
+    await afterSessionMutation(sessionId);
+  }catch(e){
+    showToast(e && e.message === "401" ? "登录状态失效了，请重新输入密钥" : "归档失败");
+  }
+}
+async function unarchiveSession(sessionId){
+  try{
+    await managePost("/app/sessions/manage/archive", { session_id: sessionId, archived: false });
+    showToast("已恢复");
+    await afterSessionMutation(sessionId);
+  }catch(_){
+    showToast("恢复失败");
+  }
+}
+async function deleteSession(sessionId){
+  const item = apiSessions.find((s) => s.id === sessionId);
+  const title = (item && item.title) || sessionId;
+  // 问后端这条会话到底有多少条消息，好在确认框里写清楚
+  let n = (item && typeof item.count === "number") ? item.count : null;
+  if (n == null){
+    try{
+      const r = await fetch(`${API_BASE}/app/sessions/manage/count?session_id=${encodeURIComponent(sessionId)}`, { headers: authHeaders() });
+      if (r.ok){ const d = await r.json(); if (typeof d.count === "number") n = d.count; }
+    }catch(_){}
+  }
+  const countText = (n == null) ? "里面的消息" : `里面的 ${n} 条消息`;
+  const ok = await askConfirm({
+    title: "删除这个会话？",
+    body: `「${title}」和${countText}都会从界面上消失。`,
+    note: "消息不会被物理抹掉（还留在数据库里），但这个操作在界面上不可撤销 —— 想留后路就先用「归档」。",
+    okText: "删除",
+    danger: true
+  });
+  if (!ok) return;
+  try{
+    await managePost("/app/sessions/manage/purge", { session_id: sessionId });
+    showToast("已删除");
+    await afterSessionMutation(sessionId);
+  }catch(e){
+    showToast(e && e.message === "401" ? "登录状态失效了，请重新输入密钥" : "删除失败");
+  }
+}
+/* 删除 / 归档之后：重拉列表 → 如果当前会话没了就切到还在的第一个，都没有就回主页。 */
+async function afterSessionMutation(removedId){
+  const wasActive = (removedId || "") === activeApiSession;
+  await loadSessions();                       // 会顺带重算 activeApiSession
+  if (!wasActive) return;
+  const stillThere = (apiSessions || []).some((s) => (s.id || "") === activeApiSession);
+  if (stillThere){
+    renderSessionList();
+    return;
+  }
+  // 当前会话没了 → 切到仍存在的第一个
+  const next = (apiSessions || [])[0];
+  if (next){
+    await activateSession(next.id || "");
+  }else{
+    // 一个都不剩 → 回到主页（空态）
+    activeApiSession = LEGACY_SESSION_ID;
+    try{ localStorage.setItem(SESSION_PICK_KEY, activeApiSession); }catch(_){}
+    resetServerHistoryCache();
+    renderSessionList();
+    setSessionPopover(false);
+    startChat([]);
+  }
 }
 async function activateSession(sessionId, { reload = true } = {}){
   activeApiSession = sessionId || LEGACY_SESSION_ID;
@@ -3521,44 +3798,101 @@ async function createNewSession(){
   }
 }
 async function renameSession(sessionId){
-  const item = apiSessions.find((s) => s.id === sessionId);
-  if (!item) return;
-  const next = prompt("给这个窗口起个名字", item.title || "新对话");
+  // 条目可能来自"归档列表"（不在 apiSessions 里），所以两边都找一下
+  const item = apiSessions.find((s) => s.id === sessionId)
+            || archivedSessions.find((s) => s.id === sessionId)
+            || { id:sessionId, title:"" };
+  const next = prompt("给这个会话起个名字", item.title || "新对话");
   if (next == null) return;
   const title = next.trim();
   if (!title) return;
   try{
-    const r = await fetch(`${API_BASE}/app/sessions/${encodeURIComponent(sessionId)}`, {
-      method:"PATCH",
-      headers:{ ...authHeaders(), "Content-Type":"application/json" },
-      body:JSON.stringify({ title })
-    });
-    if (!r.ok) throw new Error("rename " + r.status);
-    const d = await r.json();
-    apiSessions = Array.isArray(d.sessions) ? d.sessions : apiSessions.map((s) => s.id === sessionId ? { ...s, title } : s);
+    // 🔴 走新接口：标题存在消息 meta 上，**不再问 AI 身体**，
+    //    所以虚拟会话 __legacy__ 也能改名（原版这里必然 404）。
+    await managePost("/app/sessions/manage/rename", { session_id: sessionId, title });
+    const i = apiSessions.findIndex((s) => s.id === sessionId);
+    if (i >= 0) apiSessions[i] = { ...apiSessions[i], title };
+    const j = archivedSessions.findIndex((s) => s.id === sessionId);
+    if (j >= 0) archivedSessions[j] = { ...archivedSessions[j], title };
     renderSessionList();
-    showToast("窗口已改名");
-  }catch(_){
-    showToast("改名失败");
+    if (archivedSessions.length) renderArchivedList();
+    showToast("会话已改名");
+  }catch(e){
+    // 新接口不可用时退回原版（只对真实会话有效，__legacy__ 仍会 404）
+    try{
+      const r = await fetch(`${API_BASE}/app/sessions/${encodeURIComponent(sessionId)}`, {
+        method:"PATCH",
+        headers:{ ...authHeaders(), "Content-Type":"application/json" },
+        body:JSON.stringify({ title })
+      });
+      if (!r.ok) throw new Error("rename " + r.status);
+      const d = await r.json();
+      apiSessions = Array.isArray(d.sessions) ? d.sessions : apiSessions.map((s) => s.id === sessionId ? { ...s, title } : s);
+      renderSessionList();
+      showToast("会话已改名");
+    }catch(_){
+      showToast(sessionId === LEGACY_SESSION_ID ? "这条没法改名（旧接口改不了更早的记录）" : "改名失败");
+    }
   }
+}
+/* ── 会话面板事件绑定（Lily 的房子 · 2026-09-13 扩展）───────────────────
+   条目右侧现在有三个图标：改名 / 归档 / 删除。
+   点图标 → 只做那件事；点条目空白处 → 切换会话。
+   归档区（sessionArchBody）里只有"恢复"一个动作。 */
+function wireSessionRowActions(container){
+  if (!container) return;
+  container.addEventListener("click", (e) => {
+    // ① 改名
+    const renameBtn = e.target.closest("button[data-rename]");
+    if (renameBtn){
+      e.preventDefault(); e.stopPropagation();
+      renameSession(renameBtn.dataset.rename || "");
+      return;
+    }
+    // ② 归档（可逆）
+    const archiveBtn = e.target.closest("button[data-archive]");
+    if (archiveBtn){
+      e.preventDefault(); e.stopPropagation();
+      archiveSession(archiveBtn.dataset.archive || "");
+      return;
+    }
+    // ③ 恢复归档
+    const unarchBtn = e.target.closest("button[data-unarchive]");
+    if (unarchBtn){
+      e.preventDefault(); e.stopPropagation();
+      unarchiveSession(unarchBtn.dataset.unarchive || "");
+      return;
+    }
+    // ④ 删除（带二次确认）
+    const delBtn = e.target.closest("button[data-delete]");
+    if (delBtn){
+      e.preventDefault(); e.stopPropagation();
+      deleteSession(delBtn.dataset.delete || "");
+      return;
+    }
+    // ⑤ 点条目本身 → 切换会话
+    const row = e.target.closest("[data-session]");
+    if (row) activateSession(row.dataset.session || "");
+  });
 }
 if (sessionBtn) sessionBtn.addEventListener("click", (e) => {
   e.stopPropagation();
   renderSessionList();
+  // 打开面板时顺手刷新归档区（异步，不阻塞展开）
+  if (archivedSessions.length) renderArchivedList();
   setSessionPopover(sessionPop ? sessionPop.hidden : false);
 });
 if (sessionNewBtn) sessionNewBtn.addEventListener("click", createNewSession);
-if (sessionList) sessionList.addEventListener("click", (e) => {
-  const renameBtn = e.target.closest("button[data-rename]");
-  if (renameBtn){
-    e.preventDefault();
-    e.stopPropagation();
-    renameSession(renameBtn.dataset.rename || "");
-    return;
-  }
-  const row = e.target.closest("[data-session]");
-  if (row) activateSession(row.dataset.session || "");
+if (sessionArchToggle) sessionArchToggle.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!sessionArchBody) return;
+  const open = sessionArchBody.hidden;
+  sessionArchBody.hidden = !open;
+  sessionArchToggle.textContent = open ? "收起归档" : "查看归档";
+  if (open) renderArchivedList();
 });
+wireSessionRowActions(sessionList);
+wireSessionRowActions(sessionArchBody);
 document.addEventListener("click", (e) => {
   if (!sessionPop || sessionPop.hidden) return;
   if (sessionPop.contains(e.target) || (sessionBtn && sessionBtn.contains(e.target))) return;
