@@ -287,18 +287,22 @@
     overflow:auto;
     padding:10px;
     border-radius:18px;
-    background:var(--panel-bg);
-    border:1px solid var(--card-line);
-    box-shadow:0 18px 50px rgba(30,45,62,.18);
-    -webkit-backdrop-filter:blur(18px);
-    backdrop-filter:blur(18px);
+    /* ⚠️ 原来写 var(--panel-bg) —— 该变量**全文件未定义**，属性被丢弃 →
+       面板也是透的（截图里列表背后透出聊天记录就是这个原因）。
+       改成不依赖变量的实色 + 毛玻璃。 */
+    background:rgba(252,253,255,.92);
+    border:1px solid rgba(150,168,182,.18);
+    box-shadow:0 18px 50px rgba(30,45,62,.20);
+    -webkit-backdrop-filter:blur(20px) saturate(1.5);
+    backdrop-filter:blur(20px) saturate(1.5);
   }
+  :root[data-theme="harbor"] .session-pop{ background:rgba(250,248,246,.92); }
   .session-pop[hidden]{ display:none !important; }
   .session-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 2px 8px; }
   .session-title{ font-size:12px; color:var(--text-faint); font-family:var(--font-en), var(--font-cn); }
   .session-new{
-    border:1px solid var(--seg-line); border-radius:999px; padding:5px 9px;
-    background:var(--seg-track); color:var(--text-soft); font:inherit; font-size:11.5px; cursor:pointer;
+    border:1px solid rgba(140,160,176,.26); border-radius:999px; padding:5px 9px;
+    background:rgba(140,160,176,.13); color:var(--text-soft); font:inherit; font-size:11.5px; cursor:pointer;
   }
   .session-list{ display:flex; flex-direction:column; gap:2px; }
   .session-item{
@@ -306,7 +310,7 @@
     display:grid; grid-template-columns:1fr auto; align-items:center; gap:8px;
     padding:10px 9px; border-radius:12px; text-align:left; cursor:pointer; font:inherit;
   }
-  .session-item.active{ background:var(--seg-track); }
+  .session-item.active{ background:rgba(140,160,176,.13); }
   .session-item:active{ transform:scale(.992); }
   .session-main{ min-width:0; display:flex; flex-direction:column; align-items:flex-start; gap:3px; }
   .session-name{ font-size:14px; line-height:1.25; }
@@ -320,8 +324,8 @@
   .session-notice{
     margin:0 2px 8px; padding:8px 9px; border-radius:11px;
     font-size:11.5px; line-height:1.5;
-    color:var(--text-soft); background:var(--seg-track);
-    border:1px solid var(--seg-line);
+    color:var(--text-soft); background:rgba(140,160,176,.11);
+    border:1px solid rgba(140,160,176,.24);
   }
   .session-notice.warn{ color:var(--text); border-style:dashed; }
   .session-notice[hidden]{ display:none !important; }
@@ -329,7 +333,7 @@
     border:0; background:transparent; color:var(--text-faint); width:28px; height:28px;
     border-radius:50%; display:grid; place-items:center; cursor:pointer; padding:0;
   }
-  .session-rename:hover{ color:var(--accent); background:var(--seg-track); }
+  .session-rename:hover{ color:var(--accent); background:rgba(140,160,176,.13); }
   .session-rename svg{ width:15px; height:15px; display:block; }
   /* ── 会话操作按钮组（Lily 的房子 · 2026-09-13）────────────────────────
      每个会话条目右侧三个图标：改名 / 归档 / 删除。
@@ -341,11 +345,11 @@
     border-radius:50%; display:grid; place-items:center; cursor:pointer; padding:0;
     flex:none;
   }
-  .session-act:hover{ color:var(--accent); background:var(--seg-track); }
+  .session-act:hover{ color:var(--accent); background:rgba(140,160,176,.13); }
   .session-act svg{ width:15px; height:15px; display:block; }
   .session-act.danger:hover{ color:var(--danger, #c4553f); }
   /* 归档区：默认收起来，点"查看归档"才展开 */
-  .session-arch-wrap{ margin-top:6px; border-top:1px solid var(--seg-line); padding-top:6px; }
+  .session-arch-wrap{ margin-top:6px; border-top:1px solid rgba(140,160,176,.22); padding-top:6px; }
   .session-arch-wrap[hidden]{ display:none !important; }
   .session-arch-toggle{
     border:0; background:transparent; color:var(--text-faint); font:inherit;
@@ -367,23 +371,39 @@
     -webkit-backdrop-filter:blur(3px); backdrop-filter:blur(3px);
   }
   .confirm-mask[hidden]{ display:none !important; }
+  /* 🔴 2026-09-13 修复「确认框是透的、字看不清」：
+     原来写的是 background:var(--panel-bg)，但**这个变量全文件从未定义过**
+     （--seg-line 也一样没有）。CSS 变量未定义 → 该属性被整条丢弃 →
+     卡片完全没有背景，文字直接叠在下面的聊天记录上。
+     这里改成**不依赖任何变量**的实色 + 毛玻璃，两个主题下都看得清。 */
   .confirm-card{
     width:min(92vw, 360px); padding:20px 20px 14px;
-    border-radius:20px; background:var(--panel-bg);
-    border:1px solid var(--card-line);
-    box-shadow:0 24px 60px rgba(30,45,62,.26);
+    border-radius:20px;
+    background:rgba(252,253,255,.96);
+    -webkit-backdrop-filter:blur(24px) saturate(1.5);
+    backdrop-filter:blur(24px) saturate(1.5);
+    border:1px solid rgba(150,168,182,.20);
+    box-shadow:0 24px 60px rgba(30,45,62,.30);
+  }
+  :root[data-theme="harbor"] .confirm-card{
+    background:rgba(250,248,246,.96);
+    border-color:rgba(74,93,108,.18);
   }
   .confirm-title{ font-size:15.5px; margin:0 0 8px; color:var(--text); }
   .confirm-body{ font-size:13px; line-height:1.6; color:var(--text-soft); margin:0 0 4px; }
   .confirm-note{ font-size:11.5px; line-height:1.55; color:var(--text-faint); margin:8px 0 0; }
   .confirm-acts{ display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
+  /* ⚠️ --seg-line / --seg-track **也没有定义过** → 用实色兜底，别裸用变量。 */
   .confirm-btn{
-    border:1px solid var(--seg-line); border-radius:999px; padding:8px 16px;
-    background:var(--seg-track); color:var(--text-soft); font:inherit; font-size:13px; cursor:pointer;
+    border:1px solid rgba(140,160,176,.28); border-radius:999px; padding:8px 16px;
+    background:rgba(140,160,176,.12); color:var(--text-soft); font:inherit; font-size:13px; cursor:pointer;
   }
-  .confirm-btn.primary{ background:var(--accent); border-color:var(--accent); color:#fff; }
-  .confirm-btn.danger{ background:var(--danger, #c4553f); border-color:var(--danger, #c4553f); color:#fff; }
+  .confirm-btn.primary{ background:var(--accent); border-color:var(--accent); color:var(--accent-fg, #fff); }
+  .confirm-btn.danger{ background:var(--danger, #c0553f); border-color:var(--danger, #c0553f); color:#fff; }
   .confirm-btn:active{ transform:scale(.98); }
+  /* 取消按钮给一点"这是默认选择"的视觉重量：它是默认焦点，
+     按回车不该误删。danger 按钮保持醒目但不抢首焦点。 */
+  #confirmCancel{ font-weight:600; border-color:rgba(120,142,165,.42); background:rgba(255,255,255,.72); color:var(--text); }
   .terminal-panel{
     position:fixed;
     inset:0;
