@@ -13,6 +13,15 @@ relay.db-*
 uploads/
 inbox/
 last_in_id
+# 运行时状态（本地跑过就会生成；api_loop.config.json 里可能含 LLM key！）
+brain_target
+api_loop.config.json
+private_key.pem
+
+# 安全体检脚本的产物
+tools/report.txt
+_runtime/
+_runtime_sess/
 
 # ── build / deps ────────────────────────────────────────────────────────
 node_modules/

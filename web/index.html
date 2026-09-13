@@ -308,6 +308,20 @@
   .session-main{ min-width:0; display:flex; flex-direction:column; align-items:flex-start; gap:3px; }
   .session-name{ font-size:14px; line-height:1.25; }
   .session-meta{ font-size:11px; color:var(--text-faint); font-family:var(--font-en), var(--font-cn); }
+  /* ── 会话列表不可用提示（Lily 的房子 · 2026-09-12）──────────────────
+     两个用途：
+       · .session-notice      列表降级但还能用（从聊天记录里算出来的）
+       · .session-notice.warn 列表真的拿不到（连库都读不了）
+     原版这里是**静默**失败的（catch 住就回落），用户只会觉得"按钮怎么空了"，
+     所以补一个能读懂的说法。 */
+  .session-notice{
+    margin:0 2px 8px; padding:8px 9px; border-radius:11px;
+    font-size:11.5px; line-height:1.5;
+    color:var(--text-soft); background:var(--seg-track);
+    border:1px solid var(--seg-line);
+  }
+  .session-notice.warn{ color:var(--text); border-style:dashed; }
+  .session-notice[hidden]{ display:none !important; }
   .session-rename{
     border:0; background:transparent; color:var(--text-faint); width:28px; height:28px;
     border-radius:50%; display:grid; place-items:center; cursor:pointer; padding:0;
@@ -1885,6 +1899,7 @@
       <div class="session-title">API 窗口</div>
       <button class="session-new" id="sessionNewBtn" type="button">新对话</button>
     </div>
+    <div class="session-notice" id="sessionNotice" hidden></div>
     <div class="session-list" id="sessionList"></div>
   </div>
   <main class="scroll" id="scroll">
@@ -2296,7 +2311,7 @@ const profileNameInput = $("#profileNameInput"), profileNameEdit = $("#profileNa
 const modelSeg = $("#modelSeg"), effortSeg = $("#effortSeg"), contextSlider = $("#contextSlider");
 const resetRow = $("#resetRow"), swapRow = $("#swapRow"), resumeRow = $("#resumeRow");
 const statusCopy = $("#statusCopy"), statusSidEl = $("#statusSid"), statusUsedEl = $("#statusUsed");
-const sessionBtn = $("#sessionBtn"), sessionPop = $("#sessionPop"), sessionList = $("#sessionList"), sessionNewBtn = $("#sessionNewBtn");
+const sessionBtn = $("#sessionBtn"), sessionPop = $("#sessionPop"), sessionList = $("#sessionList"), sessionNewBtn = $("#sessionNewBtn"), sessionNotice = $("#sessionNotice");
 const terminalBtn = $("#terminalBtn"), terminalPanel = $("#terminalPanel"), terminalBack = $("#terminalBack"), terminalLog = $("#terminalLog"), terminalForm = $("#terminalForm"), terminalInput = $("#terminalInput"), terminalSession = $("#terminalSession");
 const brainSeg = $("#brainSeg"), brainHint = $("#brainHint");
 
@@ -3403,6 +3418,13 @@ function msgInActiveSession(m){
 function sessionFiltered(msgs){
   return (msgs || []).filter(msgInActiveSession);
 }
+function setSessionNotice(text, { warn = false } = {}){
+  if (!sessionNotice) return;
+  if (!text){ sessionNotice.hidden = true; sessionNotice.textContent = ""; return; }
+  sessionNotice.textContent = text;
+  sessionNotice.classList.toggle("warn", !!warn);
+  sessionNotice.hidden = false;
+}
 function renderSessionList(){
   if (!sessionList) return;
   const rows = [{ id:LEGACY_SESSION_ID, title:"旧主线 / Desktop 记录", since_id:0, virtual:true }].concat(apiSessions || []);
@@ -3425,18 +3447,31 @@ function setSessionPopover(open){
   if (sessionPop) sessionPop.hidden = !open;
 }
 async function loadSessions(){
-  if (USE_MOCK || !secret){ activeApiSession = LEGACY_SESSION_ID; renderSessionList(); return; }
+  if (USE_MOCK || !secret){
+    activeApiSession = LEGACY_SESSION_ID;
+    setSessionNotice("");
+    renderSessionList();
+    return;
+  }
   try{
     const r = await fetch(`${API_BASE}/app/sessions`, { headers: authHeaders() });
+    if (r.status === 401){ handle401(); throw new Error("401"); }
     if (!r.ok) throw new Error("sessions " + r.status);
     const d = await r.json();
     apiSessions = Array.isArray(d.sessions) ? d.sessions : [];
     const saved = (() => { try{ return localStorage.getItem(SESSION_PICK_KEY) || ""; }catch(_){ return ""; } })();
     const ids = new Set(apiSessions.map((s) => s.id));
     activeApiSession = (saved === LEGACY_SESSION_ID || ids.has(saved)) ? saved : (d.active_session || LEGACY_SESSION_ID);
+    // 后端说了它是兜底算出来的 → 列表可用，但"新对话 / 改名 / 删除"这些
+    // 需要 AI 身体接手的事现在做不了，先讲清楚，别让人点了半天没反应。
+    setSessionNotice(d && d.fallback
+      ? "这份列表是从聊天记录里整理出来的（AI 身体暂时不在）。翻看和切换可以用，新对话 / 改名要等它回来。"
+      : "");
   }catch(_){
+    // 不再静默：以前这里只是悄悄把列表清空，用户只会觉得"按钮怎么空了"。
     apiSessions = [];
     activeApiSession = LEGACY_SESSION_ID;
+    setSessionNotice("暂时读不到会话列表（连接不上）。下面显示的是更早的记录，消息本身不受影响。", { warn:true });
   }
   renderSessionList();
 }
@@ -3479,7 +3514,10 @@ async function createNewSession(){
     startChat([]);
     showToast("已开启新 API 窗口");
   }catch(_){
-    showToast("新对话失败");
+    // 兜底列表下最常发生的就是这个：能看见会话，但开不了新的。
+    // 原版只吐一句"新对话失败"，读不出到底怎么了。
+    const degraded = (() => { try{ return !sessionNotice.hidden; }catch(e){ return false; } })();
+    showToast(degraded ? "开不了新窗口：AI 身体暂时不在" : "新对话失败");
   }
 }
 async function renameSession(sessionId){

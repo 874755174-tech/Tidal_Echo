@@ -9,7 +9,7 @@
 | | 出处 | 我们改了吗 |
 |---|---|---|
 | `backend/app.py` | Tidal_Echo 原生（relay 后端） | **一个字都没改** |
-| `web/index.html` | Tidal_Echo 原生（PWA 前端） | **只改了 4 处 UI/登录体验，见下节** |
+| `web/index.html` | Tidal_Echo 原生（PWA 前端） | **只改了 5 处 UI/登录体验/提示，见下节** |
 | `web/` 其余文件 | Tidal_Echo 原生（PWA 前端） | **一个字都没改** |
 | `examples/api_loop.py` | Tidal_Echo 原生（服务器端 API 身体） | **一个字都没改** |
 | `channel/` | Tidal_Echo 原生（Claude Code 专用） | 用不到，`.dockerignore` 排除 |
@@ -20,13 +20,14 @@
 判断方法（任何时候都能自查）：
 ```bash
 git diff --stat e7c9bf5 -- backend/ examples/ channel/   # 应当为空
-git diff --stat e7c9bf5 -- web/                          # 只应出现 index.html（4 处家装）
+git diff --stat e7c9bf5 -- web/                          # 只应出现 index.html
 git diff --stat e7c9bf5                                  # 新增文件 + 上述前端改动
 ```
 `e7c9bf5` = 从上游 fork 时的那个 commit。
 
-> ⚠️ 2026-09-12 起，`web/index.html` **不再是零改动**（房子跑通后按 Lily 的反馈做了 4 处家装）。
-> 下一节逐条列出，全部是 UI 与登录体验，**不含任何 KaelLife 逻辑**。
+> ⚠️ 2026-09-12 起，`web/index.html` **不再是零改动**（房子跑通后按 Lily 的反馈做了 4 处家装，
+> 后来又加了 1 处会话列表提示），共 **5 处**。下一节逐条列出，
+> 全部是 UI、登录体验与错误提示，**不含任何 KaelLife 逻辑**。
 
 ## 三处缝，各补了什么
 
@@ -63,6 +64,78 @@ python -m uvicorn serve:app --host 0.0.0.0 --port $PORT --app-dir /app/deploy
 （`api_loop.py` 同样写死 127.0.0.1:3020，但它和 relay 在同一个容器里、
 只走回环通信，所以那个默认值正好合适，也不用改。）
 
+### 4. 会话列表原版是「问 AI 身体要」的 → `sessions_fallback.py` 兜底
+
+**这是本层唯一一处补的是"功能"而不只是"环境适配"的缝**，所以要讲清楚为什么。
+
+原版的会话**列表**不是从数据库读的（`app.py:992`）：
+
+```
+浏览器 → GET /app/sessions → relay → 转发 → api_loop 的 /loop/sessions
+```
+
+`api_loop` 是"临时人偶"（第一阶段的身体）。第二阶段把它换成 KaelLife 之后，
+这个转发必然失败 → relay 抛 502 → 前端把列表静默清空 →
+**"API 窗口"点开是空的，新建 / 切换 / 删除会话全部失去入口**。
+
+但会话**在数据库里本来就有**：每条消息的 `meta.api_session` 就是它的会话标签，
+`app.py` 的 `history_for_session()` 正是按这个字段过滤的。
+所以"列表"完全可以从数据推导，不必问 AI 身体。
+
+`deploy/sessions_fallback.py` 做的事：**转发失败时，直接从 `messages` 表算列表。**
+
+| 上游 | 行为 |
+|---|---|
+| api_loop 在（200） | **原样透传**，与从前一个字节都不差 |
+| api_loop 不在（5xx） | 接管，按 `meta.api_session` 分组算列表，附 `fallback: true` + `fallback_reason` |
+| 401 / 403 / 404 | **原样返回，绝不接管**（见下方红线） |
+| 数据库也读不了 | 原样返回错误（不假装成功） |
+
+#### 🔴 安全红线：兜底绝不能把「没通过鉴权」当成「上游挂了」
+
+第一版实现踩过这个坑：`call_next` 返回 401（没带密钥 / 密钥错）时也被接管，
+于是 **401 被换成 200 + 一份完整会话列表 → 整个鉴权在这一条端点上被绕过**。
+这正是"不要接受『网址难猜所以只有我知道』"那类错误的另一种形态：
+**兜底逻辑悄悄变成了一条免鉴权通道。**
+
+现在的两条防线：
+1. 只有 **5xx**（500/502/503/504）才认为"上游挂了"，401/403/404 一律原样返回；
+2. 兜底真正生效前，**自己再独立查一遍密钥**（不依赖 `call_next` 的状态码）。
+
+验收脚本 `tools/sessionfallback_check.py` 里有 12 项专门盯这件事
+（不带密钥 401 / 密钥错误 401 / 401 的 body 不含会话数据），全绿才算过。
+
+#### ⚠️ 中间件顺序（实测结论，与直觉相反）
+
+`app.user_middleware` 是**最外层在前**，而 `add_middleware` 往列表头部插
+→ **先注册的反倒跑在外层**。实际栈：
+
+```
+BaseHTTPMiddleware(_strip_public_prefix)   ← 最外层，先剥 /relay
+BaseHTTPMiddleware(_sessions_fallback)     ← 在内层，看到的是 /app/sessions
+CORSMiddleware
+```
+
+所以 `sessions_fallback.install()` 必须写在 `_strip_public_prefix` 定义**之前**。
+`serve.py` 里确实这么排。`sessions_fallback` 内部仍做一次前缀归一（防御性冗余），
+将来谁调整了顺序也不会静默失效。
+
+#### 前端配套：失败要说人话
+
+原版 `loadSessions()` 是**静默** `catch` 的——失败了就清空列表，
+用户只会觉得"按钮怎么空了"。现在会话面板里多一条提示（`#sessionNotice`）：
+
+- 降级但可用 → "这份列表是从聊天记录里整理出来的（AI 身体暂时不在）。翻看和切换可以用，新对话 / 改名要等它回来。"
+- 彻底读不到 → "暂时读不到会话列表（连接不上）。下面显示的是更早的记录，消息本身不受影响。"
+- 另外 `createNewSession()` 失败时也不再只吐一句"新对话失败"，会区分是不是降级中。
+
+#### 一个已知限制
+
+**会话标题拿不到。** 原版设计里 session 只是 `meta` 里的一个标签，
+标题从没被存进数据库（标题只活在 api_loop 的内存里）。
+所以兜底列表用**会话 ID 当标题**。要真正持久化标题，得加一列或加一张表 ——
+那属于改原版数据模型，第一阶段不做。
+
 ## 一个容器里的两个进程
 
 ```
@@ -93,14 +166,28 @@ python -m uvicorn serve:app --host 0.0.0.0 --port $PORT --app-dir /app/deploy
 | `GET /app/history?since=` | **原生**（`app.py:898`） | KaelLife 醒来拉增量，拿**原文**当第一手上下文 |
 | `POST /channel/out` | **原生**（`app.py:659`） | KaelLife 主动说话（Bark 降级成兜底） |
 | `/data/brain_target` | **原生**（`app.py:352`） | 决定"谁接消息"：`desktop` / `loop` |
-| `/app/loop_config`、`/app/sessions` | **原生**（`app.py:980`、`992`） | 换中转站/模型**不用动服务器环境变量**：那是运行时配置文件 |
+| `/app/loop_config` | **原生**（`app.py:980`） | 换中转站/模型**不用动服务器环境变量**：那是运行时配置文件 |
+| `/app/sessions`（**列表**） | 原生**依赖身体** → 已由 `sessions_fallback.py` 兜底 | 换身体后列表不会变空，前端额外给降级提示 |
 
 **换句话说**：第二阶段不需要改这个目录里的任何东西，只需要让 relay 把消息
 推给另一个进程/服务。这也是「不要在第一阶段把两套东西搅在一起」的物理保证。
 
-## `web/index.html` 的 4 处改动（**唯一被动过的原生文件**）
+> ⚠️ 唯一需要留意的是 `/app/sessions`（列表）：它原版是**转发问身体要的**，
+> 换身体后会 502。`sessions_fallback.py` 已经把这个问题解决了（见上"第 4 处缝"），
+> 第二阶段**不需要**再为此做任何事。
 
-2026-09-12 房子跑通后按 Lily 的反馈做的"家装"。**全部是 UI 与登录体验，不含任何 KaelLife 逻辑**，
+## 四道缝
+| 缝 | 原版靠什么 | 我们补什么 |
+|---|---|---|
+| 静态文件没人发 | nginx `alias` | `serve.py` 挂 `web/` 到 `/` |
+| API 前缀没人剥 | nginx `proxy_pass` 末尾斜杠 | `serve.py` 一层 ASGI 中间件 |
+| 监听到 127.0.0.1 | `app.py` 写死 | `entrypoint.sh` 用 uvicorn 命令行 |
+| 会话列表依赖身体 | 转发问 `api_loop` | `sessions_fallback.py` 从数据库推导 |
+
+## `web/index.html` 的 5 处改动（**唯一被动过的原生文件**）
+
+2026-09-12 房子跑通后按 Lily 的反馈做的"家装"，外加 1 处错误提示。
+**全部是 UI、登录体验与提示文案，不含任何 KaelLife 逻辑**，
 也不参与 relay 与 AI 侧的任何路径 —— 第二阶段换身体时不受影响。
 
 | # | 改了什么 | 位置 | 为什么 |
@@ -109,12 +196,18 @@ python -m uvicorn serve:app --host 0.0.0.0 --port $PORT --app-dir /app/deploy
 | 2 | 纪念日 `SINCE`：`2026/01/01` → `2026/07/01` | `CONFIG.SINCE` | 原值是作者占位值；7/1 是 Lily & Kael 认识日 |
 | 3 | 默认名 `AI_NAME`：`Claude` → `Kael`（并同步登录页/空状态/顶栏/个人信息面板的静态兜底文案） | `CONFIG.AI_NAME` + 静态 HTML | 原版"备注名"只改聊天页顶栏，登录页等仍写死 Claude |
 | 4 | 登录密钥**自动清洗不可见字符**，且验证失败**不再清空输入框** | `sanitizeSecret()` / `showLogin()` / login submit | 从备忘录·微信复制密钥会夹带零宽空格/BOM/NBSP/软连字符等肉眼不可见字符 → 后端 401；原版只 `.trim()`（去不掉中间与零宽），失败后还清空输入框逼用户重打整串 |
+| 5 | 会话列表**失败/降级时给出可读提示**（原版静默） | `#sessionNotice` + `setSessionNotice()` + `loadSessions()` / `createNewSession()` | 原版 `catch(_){ apiSessions=[] }` 静默清空，用户只看到"按钮空了"。现在会说明是"AI 身体不在，列表是整理出来的"还是"连不上"，并说清消息本身没受影响 |
 
-其中 2、3 各是一处常量，改回原值即可；1 是一行 CSS；4 新增一个纯函数（无副作用、不调用后端）。
+其中 2、3 各是一处常量，改回原值即可；1 是一行 CSS；4、5 是新增纯前端函数（不新增后端调用）。
 
 ## 相关文件
 
 - `Dockerfile`（仓库根目录）— 单服务镜像
 - `deploy/entrypoint.sh` — 导出持久化路径、拉起两个进程、单进程重启
-- `deploy/serve.py` — 静态托管 + 前缀剥离
+- `deploy/serve.py` — 静态托管 + 前缀剥离 + 挂载会话兜底
+- `deploy/sessions_fallback.py` — 会话列表不依赖 AI 身体的兜底（含安全红线说明）
 - `deploy/zeabur-env.example` — 环境变量清单（哪些必填、哪些别填）
+- `tools/secaudit.py` — 访问控制体检（21 项，不连公网）
+- `tools/sessioncheck.py` — 会话数据层 + 兜底断言（19 项）
+- `tools/sessionfallback_check.py` — 兜底四场景 + 鉴权红线（34 项）
+- `tools/jscheck.py` — 抽出 `index.html` 内联 JS 做语法检查

@@ -25,6 +25,22 @@ backend/app.py 原样使用（`import app`），原来的行为一个字都没�
      挂载放在最后，所以 /app/* /channel/* /healthz /uploads/* 这些 API 路由
      先匹配，静态目录不会把它们吃掉。
 
+  3) 会话列表兜底（sessions_fallback.py）
+     原版的「会话列表」不是从数据库读的，是转发问 AI 身体（api_loop）要的。
+     第二阶段把 api_loop 换成 KaelLife 之后这个转发会失败 → 列表变空。
+     这里补一层：转发失败时直接从 messages 表把列表算出来。
+     → 详细说明见 deploy/sessions_fallback.py 顶部注释。
+
+⚠️ 中间件注册顺序（**实测结论**：Starlette 的 `app.user_middleware` 是「最外层在前」，
+   而 `add_middleware` 是往列表头部插 → **先注册的跑在外层**）
+   实际栈：
+        1. _strip_public_prefix   ← 先注册 → 最外层 → 先把 /relay 剥掉
+        2. sessions_fallback      ← 后注册 → 在内层 → 看到的是 /app/sessions
+   即：`sessions_fallback.install()` 必须写在 `_strip_public_prefix` 定义**之前**。
+   本文件确实是这么排的（install 在上面）。
+   （sessions_fallback 内部仍会做一次前缀归一，属防御性冗余：万一将来顺序被调整，
+     它也不会静默失效。详见该文件注释。）
+
 启动方式（见 deploy/entrypoint.sh）：
     uvicorn serve:app --host 0.0.0.0 --port $PORT --app-dir /app/deploy
 """
@@ -53,6 +69,15 @@ from starlette.staticfiles import StaticFiles  # noqa: E402
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 PUBLIC_PREFIX = "/" + (relay.PUBLIC_PREFIX or "").strip("/")
+
+
+# ── 兜底：会话列表不依赖 AI 身体 ────────────────────────────────────────────
+# 必须在 _strip_public_prefix **之后**注册：Starlette 后注册的中间件在最外层，
+# 因此它会看到带前缀的原始 path（/relay/app/sessions），模块内部自己处理前缀。
+# 顺序反过来会让兜底静默失效（它找不到 /app/sessions 就永远只做透传）。
+import sessions_fallback  # noqa: E402
+
+sessions_fallback.install(relay, public_prefix=PUBLIC_PREFIX)
 
 
 @relay.app.middleware("http")
