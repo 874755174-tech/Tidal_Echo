@@ -1,5 +1,9 @@
 # Companion Channel · 你和你的 AI 伴侣的私密通道
 
+> 🇨🇳 **中文上手文档（面向非程序员，讲怎么启动）** → [`启动说明-kael-home.md`](启动说明-kael-home.md)
+> 🚀 **部署到 Zeabur 的逐步清单** → 工作区根目录 `kael-home-Zeabur部署清单.md`
+> 📦 本地文件夹已改名为 `kael-home`，GitHub 仓库名仍是 `Tidal_Echo`。
+
 一个**私密 1:1 聊天通道**：把「你手机上的 PWA」和「你电脑上跑的 AI 伴侣」连起来。
 AI 侧默认以 **Claude Code 的 channel 插件**形态运行——你在手机上发消息，Claude Code 会话里就冒出 `<channel>` 块；AI 调一个 `reply` 工具，你手机就收到气泡。**不绑 Claude Code**：换成 GPT / DeepSeek / Gemini / 任意 OpenAI 兼容 API 也行(见下方指引)。
 

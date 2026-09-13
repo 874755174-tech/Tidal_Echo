@@ -18,6 +18,50 @@ set -u
 PORT="${PORT:-8080}"
 export PORT
 
+# ---- 项目根目录：自动定位，不写死 /app -------------------------------------
+# 容器里是 /app；本地（Windows/macOS/Linux）跑时自动取本脚本的上级目录。
+# 想强制指定就 export APP_ROOT=/your/path
+#
+# ⚠️ Git Bash 的 pwd 会返回 POSIX 风格路径（/c/Users/...），
+#    而 Windows 版 Python 会把它拼成 C:\c\Users\... → 路径重复打不开。
+#    所以这里把 /c/... 转回 C:/...；容器(/) 与 mac/linux 不受影响。
+_norm_path() {
+  case "$1" in
+    /[a-zA-Z]/*)
+      # /c/Users/...  →  C:/Users/...
+      _d="$(printf '%s' "$1" | cut -c2 | tr '[:lower:]' '[:upper:]')"
+      _r="$(printf '%s' "$1" | cut -c4-)"
+      printf '%s:/%s' "$_d" "$_r"
+      ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+if [ -z "${APP_ROOT:-}" ]; then
+  _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  APP_ROOT="$(_norm_path "$(cd "$_here/.." && pwd)")"
+else
+  APP_ROOT="$(_norm_path "$APP_ROOT")"
+fi
+export APP_ROOT
+
+# ---- Python 解释器：优先用项目内 .venv，其次 PATH 上的 python ---------------
+# 容器里没有 .venv，直接用系统的 python（Dockerfile 已装好依赖）。
+# 本地跑时若不自动切到 .venv，会报 "No module named uvicorn"。
+if [ -z "${PYTHON:-}" ]; then
+  if [ -x "$APP_ROOT/.venv/Scripts/python.exe" ]; then
+    PYTHON="$APP_ROOT/.venv/Scripts/python.exe"          # Windows
+  elif [ -x "$APP_ROOT/.venv/bin/python" ]; then
+    PYTHON="$APP_ROOT/.venv/bin/python"                  # macOS / Linux
+  else
+    PYTHON="python"
+  fi
+fi
+export PYTHON
+
+echo "[entrypoint] APP_ROOT=$APP_ROOT"
+echo "[entrypoint] PYTHON=$PYTHON"
+
 # ---- 进程间地址（两个都在本容器内，走回环）---------------------------------
 export RELAY_URL="${RELAY_URL:-http://127.0.0.1:${PORT}}"
 export RELAY_LOOP_INGEST_URL="${RELAY_LOOP_INGEST_URL:-http://127.0.0.1:3020/loop/ingest}"
@@ -71,9 +115,9 @@ trap 'echo "[entrypoint] stopping ..."; kill 0' TERM INT
 # relay：对外，必须监听 0.0.0.0（原代码 app.py 里写死 127.0.0.1 的那行只影响
 # `python app.py` 这种启动方式；这里用 uvicorn 命令行，所以无需改源码）
 run_forever relay \
-  python -m uvicorn serve:app --host 0.0.0.0 --port "$PORT" --app-dir /app/deploy &
+  "$PYTHON" -m uvicorn serve:app --host 0.0.0.0 --port "$PORT" --app-dir "$APP_ROOT/deploy" &
 
 # api_loop：官方自带的临时身体，绑 127.0.0.1:3020（它自己的默认值，正好合适）
-run_forever api_loop python /app/examples/api_loop.py &
+run_forever api_loop "$PYTHON" "$APP_ROOT/examples/api_loop.py" &
 
 wait

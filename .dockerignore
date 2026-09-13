@@ -15,9 +15,12 @@ uploads/
 relay.env
 .env
 
-# Python 编译缓存
+# Python 编译缓存与虚拟环境（本地 .venv 有几百 MB，绝不能进构建上下文）
 __pycache__/
 *.pyc
+.venv/
+venv/
+_localtest/
 
 # 编辑器/系统垃圾
 .vscode/
