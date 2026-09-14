@@ -184,9 +184,41 @@ CORSMiddleware
 | 监听到 127.0.0.1 | `app.py` 写死 | `entrypoint.sh` 用 uvicorn 命令行 |
 | 会话列表依赖身体 | 转发问 `api_loop` | `sessions_fallback.py` 从数据库推导 |
 
-## `web/index.html` 的 5 处改动（**唯一被动过的原生文件**）
+## 第五道缝：P0 地基（2026-09-14）—— 四张表 + 身份层
 
-2026-09-12 房子跑通后按 Lily 的反馈做的"家装"，外加 1 处错误提示。
+原版只有 `messages` + `push_subscriptions` 两张表。"身份 / 设置 / 会话 / 长期记忆"
+四类东西**没有正式载体**，于是每加一个功能都只能往 `meta` 里塞
+（比如设置只能放环境变量 → 改一次要重新部署一次）。
+
+`deploy/app_ext/` 补上这四个载体。**只建表与读写，不放任何功能逻辑。**
+
+| 文件 | 做什么 |
+|---|---|
+| `app_ext/schema.py` | 4 张表 DDL + 幂等迁移 + `user_version` 版本号。**🔴 建表前后比对 `messages` 的 DDL 与行数，只要变了直接抛错** |
+| `app_ext/identity.py` | `users` / `settings` 读写 + `/app/ext/*` 四个端点 |
+| `app_ext/sessions_store.py` | `sessions` 表（从 `messages` **可重跑地投影**；🔴 **绝不覆盖 `summary`**） |
+| `app_ext/memories_store.py` | `memories` 表（房子的工作记忆，P2 的落点；**设计上不提供 delete**） |
+| `tools/app_ext_check.py` | 验收 55 项（库层 + HTTP 层 + 红线） |
+
+**三条边界（都很硬）**：
+
+1. **不改现有登录** —— `check_auth()` 仍比对 `RELAY_SECRET`，`app_ext` 全是**附加**能力。
+   新端点 `/app/ext/*` 各自 fail-closed 鉴权，但**没有取代**任何既有鉴权路径。
+2. **不改 `messages`** —— 有**运行时断言**兜底（见上表 schema 那行），不是注释承诺。
+3. **这层挂了，房子照常营业** —— `app_ext.register()` **吞掉自己的所有异常**，
+   只打印一行警告。建表失败绝不允许影响"发消息 → 收回复 → 记录不丢"。
+
+可选环境变量（都可**不填**）：`APP_EXT_DISABLED=1`（整体关闭）、
+`APP_EXT_SYNC_ON_START=0`（启动时跳过会话投影）。
+
+> ⚠️ **`sessions` 表现在是"可重建的投影"，不是真相的搬家。**
+> 标题 / 归档的真相仍在 `messages.meta`（由 `sessions_manage.py` 读写）。
+> 搬真相要同时动已验收的归档链路 + 前端读取路径，一次改三处已验过的东西不划算
+> —— 等 P2 真正需要 `summary` 时再做，那时有明确验收清单。
+
+## `web/index.html` 的 7 处改动（**唯一被动过的原生文件**）
+
+按 Lily 的反馈做的"家装"。
 **全部是 UI、登录体验与提示文案，不含任何 KaelLife 逻辑**，
 也不参与 relay 与 AI 侧的任何路径 —— 第二阶段换身体时不受影响。
 
@@ -196,18 +228,27 @@ CORSMiddleware
 | 2 | 纪念日 `SINCE`：`2026/01/01` → `2026/07/01` | `CONFIG.SINCE` | 原值是作者占位值；7/1 是 Lily & Kael 认识日 |
 | 3 | 默认名 `AI_NAME`：`Claude` → `Kael`（并同步登录页/空状态/顶栏/个人信息面板的静态兜底文案） | `CONFIG.AI_NAME` + 静态 HTML | 原版"备注名"只改聊天页顶栏，登录页等仍写死 Claude |
 | 4 | 登录密钥**自动清洗不可见字符**，且验证失败**不再清空输入框** | `sanitizeSecret()` / `showLogin()` / login submit | 从备忘录·微信复制密钥会夹带零宽空格/BOM/NBSP/软连字符等肉眼不可见字符 → 后端 401；原版只 `.trim()`（去不掉中间与零宽），失败后还清空输入框逼用户重打整串 |
-| 5 | 会话列表**失败/降级时给出可读提示**（原版静默） | `#sessionNotice` + `setSessionNotice()` + `loadSessions()` / `createNewSession()` | 原版 `catch(_){ apiSessions=[] }` 静默清空，用户只看到"按钮空了"。现在会说明是"AI 身体不在，列表是整理出来的"还是"连不上"，并说清消息本身没受影响 |
+| 5 | 会话列表**失败/降级时给出可读提示**（原版静默） | `#sessionNotice` + `setSessionNotice()` | 原版 `catch(_){ apiSessions=[] }` 静默清空，用户只看到"按钮空了"。现在会说明是"AI 身体不在，列表是整理出来的"还是"连不上"，并说清消息本身没受影响 |
+| 6 | 会话条目「改名 / 归档 / 删除」+ 二次确认 + 归档区 | 配套后端 `deploy/sessions_manage.py`（新路径 `/app/sessions/manage/*`） | 原版只有"删掉整段对话"的入口、且没有归档概念。归档（纯可逆）与清空（标记式、物理行保留）**语义分开** |
+| 7 | 修透明弹层：删除确认框与会话面板**整片透明** | `.confirm-card` / `.session-pop` | 🔴 `--panel-bg` / `--seg-line` **在这个文件里从未定义过** → CSS 属性被整条**静默丢弃**（不报错、控制台无提示）。修法：改成不依赖变量的实色 + 毛玻璃。commit `cad47ce` |
 
-其中 2、3 各是一处常量，改回原值即可；1 是一行 CSS；4、5 是新增纯前端函数（不新增后端调用）。
+其中 2、3 各是一处常量，改回原值即可；1 是一行 CSS；4、5、6 是新增纯前端函数；
+7 是修一个原版就有的 CSS 变量 bug。
 
 ## 相关文件
 
 - `Dockerfile`（仓库根目录）— 单服务镜像
 - `deploy/entrypoint.sh` — 导出持久化路径、拉起两个进程、单进程重启
-- `deploy/serve.py` — 静态托管 + 前缀剥离 + 挂载会话兜底
+- `deploy/serve.py` — 静态托管 + 前缀剥离 + 挂载会话兜底与 P0 地基
 - `deploy/sessions_fallback.py` — 会话列表不依赖 AI 身体的兜底（含安全红线说明）
+- `deploy/sessions_manage.py` — 会话归档 / 删除 / 改名（数据库直读直写，不走身体）
+- `deploy/app_ext/` — **P0 地基**：四张表（`users`/`settings`/`sessions`/`memories`）+ 身份层 + `/app/ext/*`
 - `deploy/zeabur-env.example` — 环境变量清单（哪些必填、哪些别填）
+- `tools/verify_all.py` — **一次跑完全部验收**（五套 + 红线，exit 0 = 全绿）
 - `tools/secaudit.py` — 访问控制体检（21 项，不连公网）
 - `tools/sessioncheck.py` — 会话数据层 + 兜底断言（19 项）
 - `tools/sessionfallback_check.py` — 兜底四场景 + 鉴权红线（34 项）
+- `tools/sessions_manage_check.py` — 会话归档/删除/改名 后端（40 项）
+- `tools/session_ui_check.mjs` — 会话归档/删除/改名 前端（40 项，jsdom 真跑 `index.html`）
+- `tools/app_ext_check.py` — **P0 地基验收（55 项：库层 + HTTP 层 + 红线）**
 - `tools/jscheck.py` — 抽出 `index.html` 内联 JS 做语法检查

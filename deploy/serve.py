@@ -36,6 +36,13 @@ backend/app.py 原样使用（`import app`），原来的行为一个字都没�
      这里把这四件事做成数据库直读直写，**完全不走身体**。
      → 详细说明（含"归档 vs 清空"的语义区别）见 deploy/sessions_manage.py 顶部注释。
 
+  5) P0 地基：四张表 + 身份层（app_ext/）
+     users / settings / sessions / memories —— 第一阶段一直缺的四个"载体"。
+     **只建表与读写，不改 messages、不改鉴权、不改原版任何端点。**
+     路由在全新命名空间 /app/ext/* 下。**内部吞掉自己的异常** ——
+     这层出问题必须不影响"发消息 → 收回复 → 记录不丢"这条已跑通的路。
+     → 详细说明见 deploy/app_ext/__init__.py 与各模块顶部注释。
+
 ⚠️ 中间件注册顺序（**实测结论**：Starlette 的 `app.user_middleware` 是「最外层在前」，
    而 `add_middleware` 是往列表头部插 → **先注册的跑在外层**）
    实际栈：
@@ -90,6 +97,13 @@ sessions_fallback.install(relay, public_prefix=PUBLIC_PREFIX)
 import sessions_manage  # noqa: E402
 
 sessions_manage.install(relay, public_prefix=PUBLIC_PREFIX)
+
+# ── P0 地基：四张表 + 身份层（users / settings / sessions / memories）────────
+# 只建表与载体：不改 messages、不改鉴权、不覆盖原版任何端点（路由在 /app/ext/*）。
+# 🔴 register() 内部吞掉自己的全部异常 —— 这层挂了，房子必须照常营业。
+import app_ext  # noqa: E402
+
+app_ext.register(relay, public_prefix=PUBLIC_PREFIX)
 
 
 @relay.app.middleware("http")
