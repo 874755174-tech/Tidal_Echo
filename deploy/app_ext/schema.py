@@ -60,8 +60,13 @@ import sqlite3
 from typing import Optional
 
 
-# 当前 schema 版本。以后每次改表结构 +1，并在 `_MIGRATIONS` 里补一段。
-SCHEMA_VERSION = 1
+# 当前 schema 版本。以后每次改表结构 +1，并在 `ensure_schema()` 的
+# 「迁移」那一段里补一步（见该函数内 "v1 → v2" 的写法：先 PRAGMA table_info
+# 看列在不在，再 ALTER —— 这样新库/老库跑同一段代码都安全）。
+#
+#   1 → 四张表（P0，2026-09-14）
+#   2 → settings.provider_id（P1 模型网关要"供应商"这个概念，2026-09-14）
+SCHEMA_VERSION = 2
 
 # 四张表的建表语句。
 # ⚠️ 顺序有依赖：users 先建，其余三张都 REFERENCES users(id)。
@@ -84,6 +89,7 @@ DDL_TABLES = [
         CREATE TABLE IF NOT EXISTS settings (
             user_id         TEXT PRIMARY KEY REFERENCES users(id),
             persona         TEXT,
+            provider_id     TEXT,                 -- P1：供应商 id（deepseek/relay/...）
             model_id        TEXT,                 -- 指向服务端 PROVIDERS 允许列表里的 id
             max_tokens      INTEGER,
             temperature     REAL,
@@ -211,16 +217,18 @@ def ensure_schema(relay) -> dict:
 
     返回：
         {
-          "version":      1,
+          "version":      2,
           "created":      ["users", ...],   # 本次新建的表
           "already":      [...],            # 本已存在的表
           "indexes":      [...],            # 本次新建的索引
+          "migrated":     [...],            # 本次补上的列（如 settings.provider_id）
           "messages_rows": N,               # 建表后 messages 的行数（应与建表前一致）
           "messages_untouched": True,
         }
 
     🔴 建表前后各取一次 `messages` 的 DDL 快照 + 行数，任一不同立即抛错。
        这是"绝不碰 messages"这条红线的**运行时**保证，不是注释承诺。
+       ⚠️ 迁移那一段也在快照覆盖范围内 —— 别把迁移写到快照之外去。
     """
     with connect(relay) as conn:
         before_sig = _messages_signature(conn)
@@ -238,6 +246,17 @@ def ensure_schema(relay) -> dict:
         for name, ddl in DDL_INDEXES:
             conn.execute(ddl)
             made_indexes.append(name)
+
+        # ---- 迁移（v1 → v2）：给老的 settings 补 provider_id ----
+        # 🔴 先 `PRAGMA table_info` 看列在不在，再 `ALTER`：
+        #    新库已经由 DDL 建好了这一列，上来就 ALTER 会 "duplicate column name"。
+        #    **同一段代码要同时伺候新库和老库** —— 这是幂等的关键。
+        #    以后每加一列都在这里补一步，并把 SCHEMA_VERSION +1。
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(settings)")}
+        migrated: list = []
+        if "provider_id" not in cols:
+            conn.execute("ALTER TABLE settings ADD COLUMN provider_id TEXT")
+            migrated.append("settings.provider_id")
 
         # ---- 红线断言 ----
         after_sig = _messages_signature(conn)
@@ -263,6 +282,7 @@ def ensure_schema(relay) -> dict:
         "created": created,
         "already": already,
         "indexes": made_indexes,
+        "migrated": migrated,
         "messages_rows": msg_after,
         "messages_untouched": True,
     }

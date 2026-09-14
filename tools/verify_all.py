@@ -5,9 +5,10 @@
   1. tools/secaudit.py              访问控制体检（21 项）
   2. tools/sessioncheck.py          会话数据层 + 兜底（19 项）
   3. tools/sessionfallback_check.py 兜底四场景 + 鉴权红线（34 项）
-  4. tools/app_ext_check.py         P0 地基：四张表 + 身份层（55 项）
-  5. tools/jscheck.py               index.html 内联 JS 语法
-  6. git diff -- backend/ examples/ channel/  （红线，必须为空）
+  4. tools/app_ext_check.py         P0 地基：四张表 + 身份层 + 迁移（55 项）
+  5. tools/providers_check.py       P1 模型网关：允许列表 + 三格式 + 真 HTTP（106 项）
+  6. tools/jscheck.py               index.html 内联 JS 语法
+  7. git diff -- backend/ examples/ channel/  （红线，必须为空）
 
 用法：.venv\\Scripts\\python.exe tools\\verify_all.py
 """
@@ -20,11 +21,12 @@ ROOT = os.path.dirname(HERE)
 PY = os.path.join(ROOT, ".venv", "Scripts", "python.exe")
 
 SUITES = [
-    ("1/5  访问控制体检", ["secaudit.py"]),
-    ("2/5  会话数据层 + 兜底", ["sessioncheck.py"]),
-    ("3/5  兜底四场景 + 鉴权红线", ["sessionfallback_check.py"]),
-    ("4/5  P0 地基：四张表 + 身份层", ["app_ext_check.py"]),
-    ("5/5  index.html 内联 JS 语法", ["jscheck.py"]),
+    ("1/6  访问控制体检", ["secaudit.py"]),
+    ("2/6  会话数据层 + 兜底", ["sessioncheck.py"]),
+    ("3/6  兜底四场景 + 鉴权红线", ["sessionfallback_check.py"]),
+    ("4/6  P0 地基：四张表 + 身份层", ["app_ext_check.py"]),
+    ("5/6  P1 模型网关：允许列表 + 三格式 + 真 HTTP", ["providers_check.py"]),
+    ("6/6  index.html 内联 JS 语法", ["jscheck.py"]),
 ]
 
 fails = []

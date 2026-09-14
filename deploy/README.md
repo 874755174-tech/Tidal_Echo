@@ -216,11 +216,65 @@ CORSMiddleware
 > 搬真相要同时动已验收的归档链路 + 前端读取路径，一次改三处已验过的东西不划算
 > —— 等 P2 真正需要 `summary` 时再做，那时有明确验收清单。
 
-## `web/index.html` 的 7 处改动（**唯一被动过的原生文件**）
+## 第六道缝：P1 模型网关（2026-09-14）—— 密钥不出房子
+
+**拍板第 1 项 = 甲：房子直连 LLM，key 在房子。** 这道缝把"选哪个模型"
+从身体手里收回来 —— 以前模型链在 `api_loop.config.json`，**换身体必然换配置**。
+
+| 文件 | 做什么 |
+|---|---|
+| `app_ext/providers.py` | 供应商允许列表 + 三格式适配（openai / anthropic / gemini）+ 流解析。**纯逻辑，不发请求** → 可离线单测 |
+| `app_ext/llm_gateway.py` | 真发 HTTP、收 SSE（`httpx`，`trust_env=False`） |
+| `app_ext/llm_routes.py` | `/app/ext/providers` 与 `/app/ext/llm/*` |
+| `tools/providers_check.py` | 验收 106 项（纯逻辑 + 真 HTTP 往返 + 端点 + 红线） |
+
+**三条铁律**（对应 `架构与产品路线规划.md` §4.1）：
+
+1. **前端只能选允许列表里的** —— `/app/ext/providers` 只回 `id / label / models / available / key_masked`，
+   **没有 endpoint、没有 key、连环境变量名都没有**（验收里有专门三项断言这件事）。
+2. **key 不出服务端** —— key 只在 `providers._view()` 里从环境变量读出来，只进 headers。
+3. **不接受任意 URL** —— 调用方传的是 `provider_id`（如 `"relay"`），
+   真实地址由**服务端 env**决定。（中转站地址可变**不违反**这条：地址是你填的，不是前端提交的。）
+
+### 🔴 对下游伪装成「OpenAI 兼容端点」
+
+    POST /app/ext/llm/chat      请求体 = OpenAI 风格，响应 = OpenAI 风格 SSE
+    POST /app/ext/llm/complete  请求体 = OpenAI 风格，响应 = OpenAI 风格 JSON
+
+这是本阶段最省事的一个决定：`examples/api_loop.py` **已经**会解析 OpenAI SSE，
+将来接身体时它只要把 base 换成房子、key 换成 `RELAY_SECRET`，**解析代码一行都不用改**，
+而供应商密钥从此不出房子。换供应商对下游完全透明。
+
+**错误分两段**（下游必须两种都处理）：
+
+| 时机 | 表现 |
+|---|---|
+| 开流**之前**（供应商没配 / 模型不在允许列表 / body 不合法） | 干净的 4xx + JSON |
+| 已经开流**之后**（上游 401 / 限流 / 断连） | HTTP 已 200，只能在流里发 `data: {"error": {...}}` + `[DONE]` |
+
+### 模型名不是写死的
+
+`PROVIDER_<NAME>_MODELS`（逗号分隔）整体覆盖模型清单 → **换模型不用改代码、不用重新构建**。
+规划 §4.2 要求"模型名必须用真实调用验证过再写进去"，所以有个探测端点：
+
+    POST /app/ext/providers/probe   {"provider_id":"relay","all":true}
+
+一次十几 token，把该供应商所有模型都真调一遍，报出哪些通、哪些不通。
+
+**新增环境变量见 `deploy/zeabur-env.example` 的 P1 段。** 逃生开关：
+`APP_EXT_LLM_DISABLED=1`（只关网关，四张表照常）。
+
+> ⚠️ **这组 `PROVIDER_*` 暂时不替代 `LLM_API_*`**：临时人偶现在还是自己调模型。
+> 网关是"车道修好了但还没通车" —— 等 P3 接 KaelLife 时才会把身体指过来。
+> 在那之前它已经有用：**能真实验证模型名通不通**（那是以前完全没法做的事）。
+
+## `web/index.html`：7 处家装 + 1 处 bug 修复（**唯一被动过的原生文件**）
 
 按 Lily 的反馈做的"家装"。
 **全部是 UI、登录体验与提示文案，不含任何 KaelLife 逻辑**，
 也不参与 relay 与 AI 侧的任何路径 —— 第二阶段换身体时不受影响。
+
+> 最后一条（**补丁**）不一样：它确实动了**发送路径**（修一个原版就有的 bug），所以不占"家装"编号。
 
 | # | 改了什么 | 位置 | 为什么 |
 |---|---|---|---|
@@ -231,9 +285,10 @@ CORSMiddleware
 | 5 | 会话列表**失败/降级时给出可读提示**（原版静默） | `#sessionNotice` + `setSessionNotice()` | 原版 `catch(_){ apiSessions=[] }` 静默清空，用户只看到"按钮空了"。现在会说明是"AI 身体不在，列表是整理出来的"还是"连不上"，并说清消息本身没受影响 |
 | 6 | 会话条目「改名 / 归档 / 删除」+ 二次确认 + 归档区 | 配套后端 `deploy/sessions_manage.py`（新路径 `/app/sessions/manage/*`） | 原版只有"删掉整段对话"的入口、且没有归档概念。归档（纯可逆）与清空（标记式、物理行保留）**语义分开** |
 | 7 | 修透明弹层：删除确认框与会话面板**整片透明** | `.confirm-card` / `.session-pop` | 🔴 `--panel-bg` / `--seg-line` **在这个文件里从未定义过** → CSS 属性被整条**静默丢弃**（不报错、控制台无提示）。修法：改成不依赖变量的实色 + 毛玻璃。commit `cad47ce` |
+| 补丁 | 🔴 **修一个原版就有的会话归属 bug**：在「旧主线 / Desktop 记录」（虚拟会话 `__legacy__`）里发消息，回复会落到别的会话 | 新增 `ensureRealSession()`（`doSend` / `apiSend` 两个发送入口各拦一道）+ `LEGACY_NOTICE` 常驻提示条 | 根因：**会话归属有两份**（前端视图 / 身体全局）→ 详见 `扩展边界.md` §2.5。**这一条是修 bug，不是家装**（唯一一处涉及行为的改动） |
 
 其中 2、3 各是一处常量，改回原值即可；1 是一行 CSS；4、5、6 是新增纯前端函数；
-7 是修一个原版就有的 CSS 变量 bug。
+7 是修一个原版就有的 CSS 变量 bug；**补丁**那条是修一个原版就有的**会话归属 bug**（唯一涉及行为的改动）。
 
 ## 相关文件
 
@@ -243,12 +298,14 @@ CORSMiddleware
 - `deploy/sessions_fallback.py` — 会话列表不依赖 AI 身体的兜底（含安全红线说明）
 - `deploy/sessions_manage.py` — 会话归档 / 删除 / 改名（数据库直读直写，不走身体）
 - `deploy/app_ext/` — **P0 地基**：四张表（`users`/`settings`/`sessions`/`memories`）+ 身份层 + `/app/ext/*`
-- `deploy/zeabur-env.example` — 环境变量清单（哪些必填、哪些别填）
-- `tools/verify_all.py` — **一次跑完全部验收**（五套 + 红线，exit 0 = 全绿）
+- `deploy/app_ext/providers.py` · `llm_gateway.py` · `llm_routes.py` — **P1 模型网关**：供应商允许列表 + 三格式适配 + `/app/ext/providers`、`/app/ext/llm/*`
+- `deploy/zeabur-env.example` — 环境变量清单（哪些必填、哪些别填；**P1 段在最后**）
+- `tools/verify_all.py` — **一次跑完全部验收**（六套 + 红线，exit 0 = 全绿）
 - `tools/secaudit.py` — 访问控制体检（21 项，不连公网）
 - `tools/sessioncheck.py` — 会话数据层 + 兜底断言（19 项）
 - `tools/sessionfallback_check.py` — 兜底四场景 + 鉴权红线（34 项）
 - `tools/sessions_manage_check.py` — 会话归档/删除/改名 后端（40 项）
 - `tools/session_ui_check.mjs` — 会话归档/删除/改名 前端（40 项，jsdom 真跑 `index.html`）
 - `tools/app_ext_check.py` — **P0 地基验收（55 项：库层 + HTTP 层 + 红线）**
+- `tools/providers_check.py` — **P1 模型网关验收（106 项：纯逻辑 + 真 HTTP + 端点 + 红线；自带本地假上游，不需要真 key）**
 - `tools/jscheck.py` — 抽出 `index.html` 内联 JS 做语法检查

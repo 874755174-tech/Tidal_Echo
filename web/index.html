@@ -2427,6 +2427,8 @@ let archivedSessions = [];
    改名 / 归档 / 删除现在已由新端点接管、不依赖身体，所以提示里只说
    "新建会话要等它回来"，不再笼统说"这些都用不了"。 */
 const FALLBACK_NOTICE = "这份列表是从聊天记录里整理出来的（AI 身体暂时不在）。翻看、切换、改名、归档、删除都能用；新建会话要等它回来。";
+// 🔴 历史记录视图（__legacy__ =「旧主线 / Desktop 记录」）常驻提示：它没有会话归属。
+const LEGACY_NOTICE = "这里是历史记录，不参与对话 —— 发消息会落到最近的那个会话里。";
 
 function currentTheme(){
   const t = document.documentElement.getAttribute("data-theme");
@@ -3512,6 +3514,29 @@ function activeSessionObj(){
 function effectiveApiSession(){
   return activeApiSession && activeApiSession !== LEGACY_SESSION_ID ? activeApiSession : "";
 }
+
+/* 🔴 止血（2026-09-14 实拍）：__legacy__（「旧主线 / Desktop 记录」）是虚拟会话，没有会话归属。
+   在它里面直接发消息 → effectiveApiSession() 返回空 → 不带 api_session 标签 →
+   身体的 active_session_id() 兜底（它自己那份全局"当前会话"，还会兜到最后一个会话）
+   → 回复落到别的会话（现象：A 窗口发、B 窗口收）。
+   做法：发之前先落到一个真实会话（列表第一个非 legacy = 最近活跃），并把视图跟过去。
+   根治方向 = 会话身份归房子（见 扩展边界.md / 架构与产品路线规划.md 的 P2）。 */
+async function ensureRealSession(){
+  if (activeApiSession !== LEGACY_SESSION_ID) return true;
+  const target = (apiSessions || []).find((s) => {
+    const id = (s && s.id) || "";
+    return id && id !== LEGACY_SESSION_ID;
+  });
+  if (target){
+    await activateSession(target.id, { reload:true });
+    setSessionNotice(`这里是历史记录，不参与对话 —— 这条已发到「${target.title || "新对话"}」。`, { warn:true });
+    return true;
+  }
+  await createNewSession();
+  if (activeApiSession === LEGACY_SESSION_ID) return false;
+  setSessionNotice("这里是历史记录，不参与对话 —— 已为你新开一个会话。", { warn:true });
+  return true;
+}
 function msgInActiveSession(m){
   const meta = (m && m.meta) || {};
   if (!activeApiSession || activeApiSession === LEGACY_SESSION_ID) return !meta.api_session;
@@ -3678,6 +3703,7 @@ async function loadSessions(){
   activeApiSession = (saved === LEGACY_SESSION_ID || ids.has(saved))
     ? saved
     : (ids.has(LEGACY_SESSION_ID) ? LEGACY_SESSION_ID : (apiSessions[0] && apiSessions[0].id) || LEGACY_SESSION_ID);
+  if (activeApiSession === LEGACY_SESSION_ID) setSessionNotice(LEGACY_NOTICE);
   await loadArchivedSessions();
   renderSessionList();
 }
@@ -3998,6 +4024,7 @@ async function apiNewerHistory(since, limit = 200){
 
 async function apiSend(text, attachments){
   if (USE_MOCK) return Mock.send(text);
+  if (!(await ensureRealSession())) throw new Error("no-session");   // 🔴 止血：兜住别的发送路径
   const payload = { text: text || "" };
   const sid = effectiveApiSession();
   if (sid) payload.api_session = sid;
@@ -5818,6 +5845,7 @@ function triggerSendPress(){
 async function doSend(){
   const text = inputEl.value.trim();
   if (!text) return;
+  if (!(await ensureRealSession())) return;   // 🔴 止血：历史记录视图先落到真实会话再发
   triggerSendPress();            // 发送键:轻按回弹的小反馈
   ensureAudio();                 // 手势内解锁/预热音频
   inputEl.value = "";

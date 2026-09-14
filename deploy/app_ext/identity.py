@@ -73,6 +73,7 @@ PBKDF2_ITERATIONS = 120_000
 # 🔴 **绝不接受任意键** —— 否则前端能塞 `user_id` / 任意列名。
 WRITABLE_FIELDS = {
     "persona": str,
+    "provider_id": str,      # P1：指向服务端 PROVIDERS 允许列表里的 id（不是 URL！）
     "model_id": str,
     "max_tokens": int,
     "temperature": float,
@@ -175,6 +176,7 @@ def _default_settings(relay) -> dict:
     """
     return {
         "persona": getattr(relay, "PERSONA", None) or None,
+        "provider_id": None,
         "model_id": None,
         "max_tokens": None,
         "temperature": None,
@@ -267,6 +269,15 @@ def save_settings(relay, patch: dict, user_id: str = OWNER_ID) -> dict:
     clean = validate_patch(patch)
     if not clean:
         return {"ok": False, "reason": "no_writable_fields", "changed": []}
+
+    # 🔴 P1：供应商与模型要配对。
+    # 先跟已有设置合并再校验 —— 因为只改 model_id 时，得知道 provider_id 是什么，
+    # 单看 patch 是看不出来的。校验用**宽松版**：没选供应商就不管（P0 行为不变），
+    # 严格版的校验留给真正调模型的地方（providers.resolve）。
+    from . import providers as _providers      # 局部导入：避免模块加载期互相拉扯
+    merged = dict(get_settings(relay, user_id))
+    merged.update(clean)
+    _providers.validate_choice(merged)
 
     with _schema.connect(relay) as conn:
         exists = conn.execute(

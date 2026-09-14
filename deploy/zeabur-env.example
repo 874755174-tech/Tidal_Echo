@@ -53,3 +53,50 @@ VAPID_SUBJECT=mailto:你的邮箱@example.com
 #
 # ⚠️ 第一阶段：一个 MCP / KaelLife 相关的变量都不要加。
 #    房子先把"能住人"验证完，第二阶段再谈接身体。
+
+
+# ============================================================================
+# P1 · 模型网关（2026-09-14 加）
+# ============================================================================
+# 拍板第 1 项 = 甲：「选哪个模型」从身体收回房子，密钥不出这一层。
+# 前端 / 身体只传 provider_id（如 "relay"），真实地址与 key 由服务端查表。
+#
+# 命名约定：PROVIDER_<供应商大写>_KEY / _BASE / _MODELS
+# 供应商 id 是写死后端的（改不了），**能不能用只取决于你填没填 key**：
+#     deepseek · siliconflow · openai · anthropic · gemini · relay(中转站)
+#
+# ── 唯一必填的一组：你现在在用的那个 ──────────────────────────────────────
+# 中转站（你的按量 Opus 4.6 走这里）—— 三个都要填：
+PROVIDER_RELAY_KEY=<在这儿填 key>
+PROVIDER_RELAY_BASE=https://你的中转站域名/v1
+PROVIDER_RELAY_MODELS=claude-opus-4-6
+#   ⚠️ 模型名必须是**用真实调用验证过**的，别照抄。
+#      上线后打 POST /app/ext/providers/probe 验一遍，通过了再写进上面这行。
+#   ⚠️ 中转站是"OpenAI 兼容但地址不固定" → base 只能你自己填。
+#      这**不违反**"不许任意 URL"：地址由你在服务端填，前端依旧只能选 id。
+#
+# ── 其他供应商（有 key 就填；留空 = 前端显示"未配置"，点了不会报错）──────
+# PROVIDER_DEEPSEEK_KEY=
+# PROVIDER_SILICONFLOW_KEY=
+# PROVIDER_ANTHROPIC_KEY=
+# PROVIDER_OPENAI_KEY=
+# PROVIDER_GEMINI_KEY=
+#
+# ── 可选开关 ──────────────────────────────────────────────────────────────
+# PROVIDER_<NAME>_MODELS=   整体覆盖模型清单（逗号分隔）→ 换模型不用改代码
+# PROVIDER_<NAME>_BASE=     整体覆盖 endpoint（自建 / 私有部署 / 本地测试用）
+# PROVIDERS_DISABLED=       逗号分隔，隐藏某些供应商（例：relay 没配好先关掉）
+# LLM_DEFAULT_PROVIDER=     没设"当前模型"时的默认供应商
+# APP_EXT_LLM_DISABLED=1    只关模型网关（四张表照常）
+# APP_EXT_DISABLED=1        整个扩展包关掉（回到 P0 之前）
+#
+# ⚠️ 这组**不替代**上面的 LLM_API_*：临时人偶现在还是自己调模型。
+#    等接 KaelLife（P3）时，它才会改成指着房子说话、把 key 交出来。
+#
+# ── 上线后怎么验 ──────────────────────────────────────────────────────────
+#   curl -H "Authorization: Bearer $RELAY_SECRET" \
+#        https://你的域名/app/ext/providers      ← 看 available 是不是 true
+#   curl -X POST -H "Authorization: Bearer $RELAY_SECRET" \
+#        -H "Content-Type: application/json" \
+#        -d '{"provider_id":"relay","all":true}' \
+#        https://你的域名/app/ext/providers/probe  ← 验每个模型名到底通不通

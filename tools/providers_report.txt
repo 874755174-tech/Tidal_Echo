@@ -1,0 +1,111 @@
+==========================================================================
+P1 模型网关验收　106/106 通过
+==========================================================================
+✅ 假上游已就绪（127.0.0.1:8794）
+✅ ① catalog 不含 endpoint（http/https）
+✅ ① catalog 不含环境变量名
+✅ ① 未配 key 的供应商 available=False
+✅ ① 未配 key 时 key_masked 为 None
+✅ ② mask_key 只回头尾
+✅ ② 空 key → None
+✅ ③ 未配 key → provider_unavailable
+✅ ④ 未知供应商 → unknown_provider
+✅ ⑤ 模型不在允许列表 → model_not_allowed
+✅ ⑥ PROVIDERS_DISABLED 能隐藏供应商
+✅ ⑦ PROVIDER_<X>_MODELS 覆盖模型清单
+✅ ⑦ 覆盖后 default_model = 第一个
+✅ ⑧ PROVIDER_<X>_BASE 覆盖 endpoint
+✅ ⑨ normalize 把 system 抽出来（不进 messages）
+✅ ⑨ OpenAI：Bearer + system 回到 messages 首位 + 参数名一致
+✅ ⑨ OpenAI：url 以 /chat/completions 结尾
+✅ ⑩ Anthropic：x-api-key（不是 Bearer）
+✅ ⑩ Anthropic：带 anthropic-version
+✅ ⑩ Anthropic：system 是顶层字段、不在 messages 里
+✅ ⑩ Anthropic：max_tokens 必填且带上
+✅ ⑩ Anthropic：stop → stop_sequences
+✅ ⑪ 🔴 Anthropic：连续同角色被合并（一+二）
+✅ ⑩ Anthropic：url 以 /messages 结尾（不是 /chat/completions）
+✅ ⑫ Gemini：key 在 query 里，header 里没有 key
+✅ ⑫ Gemini：assistant → role=model
+✅ ⑫ Gemini：内容在 parts 里
+✅ ⑫ Gemini：max_tokens → maxOutputTokens / generationConfig
+✅ ⑫ Gemini：system → systemInstruction
+✅ ⑬ Gemini：流式/非流式端点名不同
+✅ ⑭ openai 流解析
+✅ ⑭ anthropic 流解析
+✅ ⑭ gemini 流解析
+✅ ⑮ 噪音被静默忽略（[DONE]/ping/非 JSON/空）
+✅ ⑯ 上游 error 事件会抛出（不被吞掉）
+✅ ⑰ tool role 被拒（不静默丢上下文）
+✅ ⑰ 没听过 role 被拒
+✅ ⑱ temperature 越界被拒
+✅ ⑱ top_p 越界被拒
+✅ ⑱ max_tokens 非法被拒
+✅ ⑱ stop 类型错被拒
+✅ ⑲ 空 messages 被拒
+✅ ⑲ 超条数被拒
+✅ ⑲ 超长被拒
+✅ ⑲ 正常请求 stream=False 被尊重
+✅ ⑲ content 是 parts 数组时被拍平
+✅ ⑳ 选了供应商但模型不配对 → 拒
+✅ ㉑ 没选供应商 → 放行（P0 行为不变）
+✅ ㉑b 🔴 v1 老库升级：报出 migrated = settings.provider_id
+✅ ㉑b 🔴 provider_id 列真的落到库里了
+✅ ㉑b 🔴 迁移不丢已有设置（persona / model_id 原样）
+✅ ㉑b 🔴 迁移不动 messages（1 条老消息还在）
+✅ ㉑b 🔴 迁移幂等：再跑一次 migrated=[]
+✅ ㉑b 版本号推到 2
+✅ ㉒ OpenAI 流式：拼接正确
+✅ ㉒ OpenAI 流式：逐段回调（段数>1）
+✅ ㉒ OpenAI 流式：usage 被捡到
+✅ ㉖ 🔴 假上游收到的 Authorization 就是我们的 key
+✅ ㉘ 🔴 上游收到的 body：system 在 messages 首位、model 正确
+✅ ㉓ Anthropic 流式：拼接正确（event:/ping 被忽略）
+✅ ㉓ Anthropic 流式：逐段回调
+✅ ㉗ 🔴 假上游收到的 x-api-key 正确
+✅ ㉗ 🔴 anthropic-version 头带上了
+✅ ㉘ Anthropic body：system 在顶层、messages 里没有 system
+✅ ㉔ Gemini 流式：拼接正确
+✅ ㉔ Gemini 流式：逐段回调
+✅ ㉔ Gemini：路径里带对了动词与 key
+✅ ㉕ relay 非流式：文本正确
+✅ ㉕ anthropic 非流式：文本正确
+✅ ㉕ gemini 非流式：文本正确
+✅ ㉙ 上游 401 → 人话含「密钥无效」
+✅ ㉙ 401 的 upstream_status 被带出来
+✅ ㉚ 上游 404 → 人话含「模型名」
+✅ ㉛ 连不上 → 报 network，不崩
+✅ ㉜ probe 成功 → ok=True + sample
+✅ ㉝ probe_provider → verified 列出模型
+✅ ㉜ 非 openai 格式的 probe 也通（走 generateContent）
+✅ ㉞ relay 能启动
+✅ 🔴 ㉞-㊲ 无密钥 GET /app/ext/providers → 401
+✅ 🔴 ㉞-㊲ 无密钥 POST /app/ext/providers/probe → 401
+✅ 🔴 ㉞-㊲ 无密钥 POST /app/ext/llm/complete → 401
+✅ 🔴 ㉞-㊲ 无密钥 POST /app/ext/llm/chat → 401
+✅ ㊳ 带密钥 GET /providers → 200
+✅ 🔴 ㊳ 响应里没有 URL
+✅ 🔴 ㊳ 响应里没有环境变量名
+✅ 🔴 ㊳ 响应里没有完整 key
+✅ ㊴ relay.available=True（假上游配好了）
+✅ ㊹ 被 PROVIDERS_DISABLED 关掉的供应商不在列表里
+✅ ㊵ 非流式端点 200 + OpenAI 兼容形状
+✅ ㊶ 流式端点 200
+✅ 🔴 ㊶ SSE 逐段（>1 帧）且拼接正确
+✅ 🔴 ㊶ 以 [DONE] 收尾
+✅ 🔴 ㊶ finish_reason=stop 有发出
+✅ ㊷ 未知供应商 → 400（干净 4xx，不是流里报）
+✅ ㊸ 模型不在允许列表 → 400 model_not_allowed
+✅ ㊹ PUT settings 存 provider_id + model_id → 200
+✅ ㊻ GET settings 读得回 provider_id
+✅ ㊻ 只改 model_id 时 provider_id 被保留（不是整行覆盖）
+✅ ㊺ PUT settings 模型不配对 → 400
+✅ 🔴 ㊺ 被拒之后设置**没有被改坏**
+✅ ㊼ probe 端点 200
+✅ 🔴 ㊽ 回归：P0 的 /app/ext/me 仍 200
+✅ 🔴 ㊾ 回归：原版 /app/history 仍 200
+✅ 🔴 schema 版本已到 2（迁移生效）
+✅ 🔴 messages 行数未变（2 条种子）+ 四张表齐
+✅ 🔴 ㊿ 红线：git diff 为空（backend/examples/channel 零改动）
+==========================================================================
+全部通过 ✅

@@ -12,7 +12,7 @@ P0 地基验收 —— 四张表 / 身份层 / 红线
      3.  🔴 messages 的 DDL 快照**一字不变**
      4.  🔴 messages 的行数**一行不变**
      5.  幂等：连跑 3 次，结果一致、表数量不膨胀
-     6.  user_version = 1
+     6.  user_version = 当前 SCHEMA_VERSION（v2 起跟着代码走，不写死数字）
      7.  播种房主：1 条、id=u_owner、role=owner
      8.  🔴 secret_hash 里**不含明文密钥**
      9.  verify_secret 能验通过
@@ -253,7 +253,8 @@ def main() -> int:
         conn = sqlite3.connect(db_path)
         ver = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.close()
-        chk("⑥ user_version = 1", ver == 1, str(ver))
+        chk("⑥ user_version 已推到当前 SCHEMA_VERSION",
+            ver == S.SCHEMA_VERSION, f"库里 {ver} / 代码 {S.SCHEMA_VERSION}")
 
         # 5) 播种房主
         seed1 = I.ensure_owner(R)
