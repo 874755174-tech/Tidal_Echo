@@ -329,6 +329,18 @@
   }
   .session-notice.warn{ color:var(--text); border-style:dashed; }
   .session-notice[hidden]{ display:none !important; }
+  /* ── 页面级常驻提示（历史记录视图 · 2026-09-14）──────────────────────
+     与 .session-notice 的分工：
+       .session-notice  在会话面板里 → 讲"这个列表是怎么来的"（降级说明）
+       .page-notice     在页面顶部   → 讲"你现在待在哪儿"（历史记录，常驻） */
+  .page-notice{
+    flex:0 0 auto; margin:10px var(--side-pad) 0; padding:9px 11px; border-radius:12px;
+    font-size:12px; line-height:1.5;
+    color:var(--text-soft); background:rgba(140,160,176,.11);
+    border:1px solid rgba(140,160,176,.24);
+  }
+  .page-notice.warn{ color:var(--text); border-style:dashed; }
+  .page-notice[hidden]{ display:none !important; }
   .session-rename{
     border:0; background:transparent; color:var(--text-faint); width:28px; height:28px;
     border-radius:50%; display:grid; place-items:center; cursor:pointer; padding:0;
@@ -1970,6 +1982,10 @@
     </div>
     <button class="avatar hidden" id="avatarBtn" aria-label="查看个人信息" title="个人信息"></button>
   </header>
+  <!-- 🔴 页面级常驻提示（历史记录视图 · 2026-09-14 修）
+       原来这条放在会话面板「里面」，面板一关就看不见；而且切会话走的是 activateSession()，
+       那里根本没设它 → Lily 实测「没看到常驻提示条」。所以挪出来 + 补调用。 -->
+  <div class="page-notice" id="pageNotice" hidden></div>
   <div class="session-pop" id="sessionPop" hidden>
     <div class="session-head">
       <div class="session-title">会话</div>
@@ -2403,7 +2419,7 @@ const profileNameInput = $("#profileNameInput"), profileNameEdit = $("#profileNa
 const modelSeg = $("#modelSeg"), effortSeg = $("#effortSeg"), contextSlider = $("#contextSlider");
 const resetRow = $("#resetRow"), swapRow = $("#swapRow"), resumeRow = $("#resumeRow");
 const statusCopy = $("#statusCopy"), statusSidEl = $("#statusSid"), statusUsedEl = $("#statusUsed");
-const sessionBtn = $("#sessionBtn"), sessionPop = $("#sessionPop"), sessionList = $("#sessionList"), sessionNewBtn = $("#sessionNewBtn"), sessionNotice = $("#sessionNotice");
+const sessionBtn = $("#sessionBtn"), sessionPop = $("#sessionPop"), sessionList = $("#sessionList"), sessionNewBtn = $("#sessionNewBtn"), sessionNotice = $("#sessionNotice"), pageNotice = $("#pageNotice");
 /* 归档区 + 二次确认弹层（Lily 的房子 · 2026-09-13 新增） */
 const sessionArchWrap = $("#sessionArchWrap"), sessionArchToggle = $("#sessionArchToggle"), sessionArchBody = $("#sessionArchBody");
 const confirmMask = $("#confirmMask"), confirmTitle = $("#confirmTitle"), confirmBody = $("#confirmBody"), confirmNote = $("#confirmNote"), confirmOk = $("#confirmOk"), confirmCancel = $("#confirmCancel");
@@ -2428,7 +2444,7 @@ let archivedSessions = [];
    "新建会话要等它回来"，不再笼统说"这些都用不了"。 */
 const FALLBACK_NOTICE = "这份列表是从聊天记录里整理出来的（AI 身体暂时不在）。翻看、切换、改名、归档、删除都能用；新建会话要等它回来。";
 // 🔴 历史记录视图（__legacy__ =「旧主线 / Desktop 记录」）常驻提示：它没有会话归属。
-const LEGACY_NOTICE = "这里是历史记录，不参与对话 —— 发消息会落到最近的那个会话里。";
+const LEGACY_NOTICE = "这里是历史记录，不参与对话 —— 发消息会自动落到最近的会话。想聊别的话题，点上方「会话」切换，旧记录一条都不会丢。";
 
 function currentTheme(){
   const t = document.documentElement.getAttribute("data-theme");
@@ -3529,12 +3545,12 @@ async function ensureRealSession(){
   });
   if (target){
     await activateSession(target.id, { reload:true });
-    setSessionNotice(`这里是历史记录，不参与对话 —— 这条已发到「${target.title || "新对话"}」。`, { warn:true });
+    setPageNotice(`这条已发到「${target.title || "新对话"}」。`, { warn:true, autoHide:8000 });
     return true;
   }
   await createNewSession();
   if (activeApiSession === LEGACY_SESSION_ID) return false;
-  setSessionNotice("这里是历史记录，不参与对话 —— 已为你新开一个会话。", { warn:true });
+  setPageNotice("已为你新开一个会话。", { warn:true, autoHide:8000 });
   return true;
 }
 function msgInActiveSession(m){
@@ -3551,6 +3567,21 @@ function setSessionNotice(text, { warn = false } = {}){
   sessionNotice.textContent = text;
   sessionNotice.classList.toggle("warn", !!warn);
   sessionNotice.hidden = false;
+}
+let pageNoticeTimer = null;
+/* autoHide 用毫秒；传 0 = 常驻不消失（历史记录提示用这个）。 */
+function setPageNotice(text, { warn = false, autoHide = 0 } = {}){
+  if (!pageNotice) return;
+  if (pageNoticeTimer){ clearTimeout(pageNoticeTimer); pageNoticeTimer = null; }
+  if (!text){ pageNotice.hidden = true; pageNotice.textContent = ""; return; }
+  pageNotice.textContent = text;
+  pageNotice.classList.toggle("warn", !!warn);
+  pageNotice.hidden = false;
+  if (autoHide > 0) pageNoticeTimer = setTimeout(() => setPageNotice(""), autoHide);
+}
+/* 只有"站在历史记录里"才常驻提示；切到真实会话自动收起。 */
+function refreshPageNotice(){
+  setPageNotice(activeApiSession === LEGACY_SESSION_ID ? LEGACY_NOTICE : "");
 }
 function renderSessionList(){
   if (!sessionList) return;
@@ -3703,7 +3734,7 @@ async function loadSessions(){
   activeApiSession = (saved === LEGACY_SESSION_ID || ids.has(saved))
     ? saved
     : (ids.has(LEGACY_SESSION_ID) ? LEGACY_SESSION_ID : (apiSessions[0] && apiSessions[0].id) || LEGACY_SESSION_ID);
-  if (activeApiSession === LEGACY_SESSION_ID) setSessionNotice(LEGACY_NOTICE);
+  refreshPageNotice();
   await loadArchivedSessions();
   renderSessionList();
 }
@@ -3803,6 +3834,7 @@ async function activateSession(sessionId, { reload = true } = {}){
   try{ localStorage.setItem(SESSION_PICK_KEY, activeApiSession); }catch(_){}
   resetServerHistoryCache();
   renderSessionList();
+  refreshPageNotice();   // 🔴 手动切到历史记录也要立刻出常驻提示（原来只有 loadSessions 会设）
   setSessionPopover(false);
   const sid = effectiveApiSession();
   if (sid){
