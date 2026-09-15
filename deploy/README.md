@@ -225,8 +225,8 @@ CORSMiddleware
 |---|---|
 | `app_ext/providers.py` | 供应商允许列表 + 三格式适配（openai / anthropic / gemini）+ 流解析。**纯逻辑，不发请求** → 可离线单测 |
 | `app_ext/llm_gateway.py` | 真发 HTTP、收 SSE（`httpx`，`trust_env=False`） |
-| `app_ext/llm_routes.py` | `/app/ext/providers` 与 `/app/ext/llm/*` |
-| `tools/providers_check.py` | 验收 106 项（纯逻辑 + 真 HTTP 往返 + 端点 + 红线） |
+| `app_ext/llm_routes.py` | `/app/ext/providers` 与 `/app/ext/llm/*`（含 🆕 **OpenAI 路径别名**，见下节） |
+| `tools/providers_check.py` | 验收 **117** 项（纯逻辑 + 真 HTTP 往返 + 端点 + **通车仿真** + 红线） |
 
 **三条铁律**（对应 `架构与产品路线规划.md` §4.1）：
 
@@ -238,12 +238,38 @@ CORSMiddleware
 
 ### 🔴 对下游伪装成「OpenAI 兼容端点」
 
-    POST /app/ext/llm/chat      请求体 = OpenAI 风格，响应 = OpenAI 风格 SSE
-    POST /app/ext/llm/complete  请求体 = OpenAI 风格，响应 = OpenAI 风格 JSON
+    POST /app/ext/llm/chat                   请求体 = OpenAI 风格，响应 = OpenAI 风格 SSE
+    POST /app/ext/llm/complete               请求体 = OpenAI 风格，响应 = OpenAI 风格 JSON
+    POST /app/ext/llm/v1/chat/completions    🆕 别名：**按 body 的 stream 分流**（OpenAI 标准路径）
+    POST /app/ext/llm/chat/completions       🆕 别名：同上（少一层 v1，防 base 填错）
 
 这是本阶段最省事的一个决定：`examples/api_loop.py` **已经**会解析 OpenAI SSE，
 将来接身体时它只要把 base 换成房子、key 换成 `RELAY_SECRET`，**解析代码一行都不用改**，
 而供应商密钥从此不出房子。换供应商对下游完全透明。
+
+### 🆕 通车前置：为什么必须有那两个别名（2026-09-15）
+
+`examples/api_loop.py` 生成请求时是**硬编码拼接**的，而它在红线目录里（改不了）：
+
+    route["url"].rstrip("/") + "/chat/completions"      # :305 流式 / :343 非流式
+
+也就是说**身体只会往后拼 `/chat/completions`**。通车 = 把身体的 `LLM_API_BASE`
+指到房子 → 房子若不认这条路径，第一秒就是 404。
+
+🔴 还有个坑：身体**流式与非流式用的是同一个路径**，只靠 body 里的 `stream` 字段区分
+（`stream_chat:292` 发 `True`，`complete_chat:333` 发 `False`）。所以别名端点必须
+**自己按 `stream` 分流** —— 这才是真正的 OpenAI 兼容（将来换任何标准客户端都是零改动）。
+
+`stream` 的默认值按 **OpenAI 语义**取（**不传 = 非流式**），跟 `normalize_request`
+里的默认 `True` 不同 —— 那边默认 True 是给 `/llm/chat` 这个"名字就写着流式"的端点用的。
+
+**通车怎么切**（P3；只改身体三个 env，**完全可逆**）：
+
+    LLM_API_BASE=https://<域名>/app/ext/llm/v1      ← 注意结尾是 /v1
+    LLM_API_KEY=<RELAY_SECRET>
+    LLM_MODEL=<必须在 PROVIDER_RELAY_MODELS 里>
+
+改回去即恢复原状，**不需要动一行代码**。
 
 **错误分两段**（下游必须两种都处理）：
 
@@ -298,7 +324,7 @@ CORSMiddleware
 - `deploy/sessions_fallback.py` — 会话列表不依赖 AI 身体的兜底（含安全红线说明）
 - `deploy/sessions_manage.py` — 会话归档 / 删除 / 改名（数据库直读直写，不走身体）
 - `deploy/app_ext/` — **P0 地基**：四张表（`users`/`settings`/`sessions`/`memories`）+ 身份层 + `/app/ext/*`
-- `deploy/app_ext/providers.py` · `llm_gateway.py` · `llm_routes.py` — **P1 模型网关**：供应商允许列表 + 三格式适配 + `/app/ext/providers`、`/app/ext/llm/*`
+- `deploy/app_ext/providers.py` · `llm_gateway.py` · `llm_routes.py` — **P1 模型网关**：供应商允许列表 + 三格式适配 + `/app/ext/providers`、`/app/ext/llm/*`（含 **OpenAI 路径别名** `/v1/chat/completions`，通车前置）
 - `deploy/zeabur-env.example` — 环境变量清单（哪些必填、哪些别填；**P1 段在最后**）
 - `tools/verify_all.py` — **一次跑完全部验收**（六套 + 红线，exit 0 = 全绿）
 - `tools/secaudit.py` — 访问控制体检（21 项，不连公网）
@@ -307,5 +333,5 @@ CORSMiddleware
 - `tools/sessions_manage_check.py` — 会话归档/删除/改名 后端（40 项）
 - `tools/session_ui_check.mjs` — 会话归档/删除/改名 前端（40 项，jsdom 真跑 `index.html`）
 - `tools/app_ext_check.py` — **P0 地基验收（55 项：库层 + HTTP 层 + 红线）**
-- `tools/providers_check.py` — **P1 模型网关验收（106 项：纯逻辑 + 真 HTTP + 端点 + 红线；自带本地假上游，不需要真 key）**
+- `tools/providers_check.py` — **P1 模型网关验收（117 项：纯逻辑 + 真 HTTP + 端点 + OpenAI 路径别名 + 通车仿真 + 红线；自带本地假上游，不需要真 key）**
 - `tools/jscheck.py` — 抽出 `index.html` 内联 JS 做语法检查

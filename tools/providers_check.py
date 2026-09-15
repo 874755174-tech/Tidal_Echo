@@ -76,6 +76,15 @@ P1 模型网关验收 —— 允许列表 / 三格式适配 / 真 HTTP 通路 / 
      48. 🔴 回归：P0 的 /app/ext/me 仍 200
      49. 🔴 回归：原版 /app/history 仍 200
 
+  C2. 🆕 OpenAI 路径别名（P3 通车前置 · 2026-09-15）
+     51. 🔴 两条别名路径无密钥 → 401（fail-closed）
+     52. 🔴 stream=True → SSE 逐段 + 以 [DONE] 收尾（分流到流式）
+     53. 🔴 stream=False → JSON 非流式（分流到非流式）
+     54. 🔴 不带 stream → 非流式（OpenAI 语义：默认不流）
+     55. 🔴 少一层 v1 的别名也走通（LLM_API_BASE 填错一层有救）
+     56. 🔴 开流前错误 → 干净 400（不是塞进流里）
+     57. 🔴 通车仿真：照身体（api_loop.py）的形状打一遍 + 参数没被吃掉
+
   D. 红线
      50. git diff e7c9bf5 -- backend/ examples/ channel/ 为空
 
@@ -825,6 +834,91 @@ def part_c(tmp: Path) -> None:
         chk("🔴 messages 行数未变（2 条种子）+ 四张表齐",
             d.get("messages_rows") == 2 and d.get("tables_ok") is True,
             f"messages={d.get('messages_rows')} tables_ok={d.get('tables_ok')}")
+
+        # ── 51-57) 🆕 OpenAI 路径别名（P3 通车前置，2026-09-15）──────────────
+        #
+        # 为什么必须验：`examples/api_loop.py`（红线目录，改不了）生成请求时是
+        #     route["url"].rstrip("/") + "/chat/completions"
+        # 也就是说**身体只会往后拼 `/chat/completions`**，而且它流式/非流式
+        # 用的是**同一个路径**，只靠 body 的 `stream` 字段区分。
+        # 通车 = 把身体的 LLM_API_BASE 指到房子 → 这条路径认不出来就是第一秒 404。
+        V1 = "/app/ext/llm/v1/chat/completions"
+        V0 = "/app/ext/llm/chat/completions"
+
+        st, _ = req(base + V1, method="POST", body={"messages": [{"role": "user", "content": "x"}]})
+        chk("🔴 51 别名无密钥 → 401（fail-closed）", st == 401, f"实际 {st}")
+        st, _ = req(base + V0, method="POST", body={"messages": [{"role": "user", "content": "x"}]})
+        chk("🔴 51 少一层 v1 的别名无密钥 → 401", st == 401, f"实际 {st}")
+
+        st, lines = req_sse(base + V1, token=SECRET, body={
+            "provider_id": "relay", "model": MODEL,
+            "messages": [{"role": "user", "content": "在吗"}], "stream": True,
+        })
+        fr = [l[5:].strip() for l in lines if l.startswith("data:")]
+        txt = ""
+        for f in fr:
+            if f == "[DONE]":
+                continue
+            try:
+                o = json.loads(f)
+            except Exception:
+                continue
+            for ch in (o.get("choices") or []):
+                txt += (ch.get("delta") or {}).get("content") or ""
+        chk("🔴 52 别名 stream=True → SSE 逐段 + 拼接正确",
+            st == 200 and len(fr) > 2 and txt == f"[{MODEL}] {MOCK_TEXT}",
+            f"{st} {len(fr)}帧 text={txt!r}")
+        chk("🔴 52 别名 stream=True → 以 [DONE] 收尾", fr and fr[-1] == "[DONE]", str(fr[-1:]))
+
+        st, d = req(base + V1, method="POST", token=SECRET, body={
+            "provider_id": "relay", "model": MODEL,
+            "messages": [{"role": "user", "content": "在吗"}], "stream": False,
+        })
+        chk("🔴 53 别名 stream=False → JSON 非流式（object=chat.completion）",
+            st == 200 and d.get("object") == "chat.completion"
+            and d["choices"][0]["message"]["content"] == f"[{MODEL}] {MOCK_TEXT}",
+            f"{st} {json.dumps(d, ensure_ascii=False)[:140]}")
+
+        st, d = req(base + V1, method="POST", token=SECRET, body={
+            "provider_id": "relay", "model": MODEL,
+            "messages": [{"role": "user", "content": "在吗"}],
+        })
+        chk("🔴 54 别名不带 stream → 非流式（OpenAI 语义：默认不流）",
+            st == 200 and d.get("object") == "chat.completion", f"{st} 类型={type(d).__name__}")
+
+        st, lines = req_sse(base + V0, token=SECRET, body={
+            "provider_id": "relay", "model": MODEL,
+            "messages": [{"role": "user", "content": "在吗"}], "stream": True,
+        })
+        chk("🔴 55 少一层 v1 的别名也走通（base 填错一层有救）",
+            st == 200 and any(l.startswith("data:") for l in lines), f"{st} {len(lines)}行")
+
+        st, d = req(base + V1, method="POST", token=SECRET, body={
+            "provider_id": "relay", "model": "not-in-list",
+            "messages": [{"role": "user", "content": "x"}], "stream": True,
+        })
+        chk("🔴 56 别名开流前错误 → 干净 400（不是流里报）",
+            st == 400 and d["error"]["code"] == "model_not_allowed", f"{st} {d}")
+
+        # 57) 🔴 通车仿真：完全照身体的调用方式打一遍
+        #     身体的三个动作（examples/api_loop.py）：url = BASE.rstrip("/") + "/chat/completions"
+        #     headers = {"Authorization": f"Bearer {key}"}；body 见下（:293-299 / :334-340）
+        st, lines = req_sse(base + V1, token=SECRET, body={
+            "model": MODEL,
+            "messages": [{"role": "system", "content": "你是汐"},
+                         {"role": "user", "content": "在吗"}],
+            "temperature": 0.7, "max_tokens": 2000, "stream": True,
+        })
+        body_received = seen.get("body") or {}
+        chk("🔴 57 通车仿真：身体形状的请求能被解析并流出文本",
+            st == 200 and any(l.startswith("data:") for l in lines), f"{st}")
+        chk("🔴 57 通车仿真：上游收到的 system 在 messages 首位",
+            (body_received.get("messages") or [{}])[0].get("role") == "system",
+            json.dumps(body_received, ensure_ascii=False)[:140])
+        chk("🔴 57 通车仿真：max_tokens/temperature 没被网关吃掉",
+            body_received.get("max_tokens") == 2000
+            and abs((body_received.get("temperature") or 0) - 0.7) < 1e-9,
+            f"max_tokens={body_received.get('max_tokens')} temp={body_received.get('temperature')}")
 
     finally:
         proc.terminate()

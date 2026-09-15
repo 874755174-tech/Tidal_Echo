@@ -68,6 +68,9 @@ _ROUTES = [
     "/app/ext/me", "/app/ext/login", "/app/ext/settings", "/app/ext/schema",
     "/app/ext/providers", "/app/ext/providers/probe",
     "/app/ext/llm/chat", "/app/ext/llm/complete",
+    # 🆕 OpenAI 标准路径别名（P3 通车前置）：身体只会往后拼 `/chat/completions`，
+    #    且它在红线目录里改不了 → 只能房子认这条路。按 body 的 stream 分流。
+    "/app/ext/llm/v1/chat/completions", "/app/ext/llm/chat/completions",
 ]
 
 

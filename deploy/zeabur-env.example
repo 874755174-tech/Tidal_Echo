@@ -90,13 +90,33 @@ PROVIDER_RELAY_MODELS=claude-opus-4-6
 # APP_EXT_LLM_DISABLED=1    只关模型网关（四张表照常）
 # APP_EXT_DISABLED=1        整个扩展包关掉（回到 P0 之前）
 #
-# ⚠️ 这组**不替代**上面的 LLM_API_*：临时人偶现在还是自己调模型。
-#    等接 KaelLife（P3）时，它才会改成指着房子说话、把 key 交出来。
+# ⚠️ 这组**不替代**上面的 LLM_API_*：临时人偶现在还是自己调模型（那三个 env）。
+#    两组**并存**，删了 LLM_API_* 人偶立刻不会说话。
 #
-# ── 上线后怎么验 ──────────────────────────────────────────────────────────
-#   curl -H "Authorization: Bearer $RELAY_SECRET" \
-#        https://你的域名/app/ext/providers      ← 看 available 是不是 true
-#   curl -X POST -H "Authorization: Bearer $RELAY_SECRET" \
-#        -H "Content-Type: application/json" \
-#        -d '{"provider_id":"relay","all":true}' \
-#        https://你的域名/app/ext/providers/probe  ← 验每个模型名到底通不通
+# ── 🆕 P3 通车：让身体改指着房子说话（只改上面那三个，完全可逆）──────────
+#    通车后链路变成：身体 → 房子网关 → 上游。**key 从此只住在房子这一层。**
+#
+#      LLM_API_BASE=https://你的域名/app/ext/llm/v1     ← 🔴 注意结尾的 /v1
+#      LLM_API_KEY=<填 RELAY_SECRET，不再填中转站的 key>
+#      LLM_MODEL=<必须出现在 PROVIDER_RELAY_MODELS 里>
+#
+#    🔴 为什么 base 要写到 /v1 —— 身体会自动往后拼 `/chat/completions`
+#       （examples/api_loop.py:305/:343 写死的，改不了），所以房子专门注册了
+#       `/app/ext/llm/v1/chat/completions` 这条别名来对接。
+#       少写一层 /v1 也能通（另有 `/app/ext/llm/chat/completions` 兜底）。
+#
+#    ✅ 改回原来的 LLM_API_* 即恢复原状，**不用动一行代码**。
+#    ⚠️ 改 env 要重启，重启那几十秒 Kael 不说话 —— 挑个不在聊的时候切。
+#
+# ── 上线后怎么验（Windows PowerShell 写法；别照抄网上那种 bash 版）────────
+#   $t = Read-Host "粘贴 RELAY_SECRET"       ← 弹框输入，密钥不留在命令里
+#   $h = @{ Authorization = "Bearer $t" }
+#   Invoke-RestMethod -Headers $h -Uri https://你的域名/app/ext/providers
+#                                            ← 看 relay 的 available 是不是 true
+#   Invoke-RestMethod -Method Post -Headers $h -ContentType "application/json" `
+#     -Body '{"provider_id":"relay","all":true}' `
+#     -Uri https://你的域名/app/ext/providers/probe
+#                                            ← 验每个模型名到底通不通
+#   ⚠️ bash 版 `curl -H "Authorization: Bearer $RELAY_SECRET"` 在 PowerShell 里
+#      跑不通：`$RELAY_SECRET` 是空变量（环境变量得写 `$env:RELAY_SECRET`），
+#      而且 `curl` 是 Invoke-WebRequest 的别名、不是真 curl。要用真 curl 写 `curl.exe`。
