@@ -1,5 +1,5 @@
 ==========================================================================
-P1 模型网关验收　131/131 通过
+P1 模型网关验收　145/145 通过
 ==========================================================================
 ✅ 假上游已就绪（127.0.0.1:8794）
 ✅ ① catalog 不含 endpoint（http/https）
@@ -62,6 +62,9 @@ P1 模型网关验收　131/131 通过
 ✅ 62 EFFORT_MAP 的值可以是对象（嵌套字段直接塞进 body）
 ✅ 🔴 63 EFFORT_MAP 写坏 → 按原值发，不抛错
 ✅ 64 effort 非字符串 → bad_param（干净 400）
+✅ 🔴 77 独立字段 reasoning_content → 判定路径 A
+✅ 🔴 78 内联 <thinking> → 判定路径 B，**不**误判成 A
+✅ 🔴 79 什么都没有 → 判定路径 C（上游压根没给）
 ✅ 🔴 64b EFFORT_VALUES 覆盖设置页的全部档位（含 xhigh）
 ✅ ㉒ OpenAI 流式：拼接正确
 ✅ ㉒ OpenAI 流式：逐段回调（段数>1）
@@ -110,6 +113,17 @@ P1 模型网关验收　131/131 通过
 ✅ ㊺ PUT settings 模型不配对 → 400
 ✅ 🔴 ㊺ 被拒之后设置**没有被改坏**
 ✅ ㊼ probe 端点 200
+✅ 🔴 69 raw 无密钥 → 401
+✅ 🔴 70 raw 流式 200
+✅ 🔴 70 原样带回 reasoning_content 帧（不解析、不丢）+ 判定路径 A
+✅ 🔴 71 对照：老端点出口帧里没有 reasoning_content（复现断点①）
+✅ 🔴 72 认得出内联 <thinking> 且不误判成路径 A
+✅ 🔴 73 raw 非流式也带回原始 JSON（含 reasoning_content）
+✅ 🔴 74 响应里没有 key
+✅ 🔴 74 只回 host+path，不回完整 URL（query 里可能有 key）
+✅ 🔴 74 不回 headers（Authorization / Bearer 不外泄）
+✅ 🔴 75 回显 request_body（我们真正发出去的 body）
+✅ 🔴 76 max_frames=1 → 只回 1 帧且标了 truncated
 ✅ 🔴 ㊽ 回归：P0 的 /app/ext/me 仍 200
 ✅ 🔴 ㊾ 回归：原版 /app/history 仍 200
 ✅ 🔴 schema 版本已到 2（迁移生效）

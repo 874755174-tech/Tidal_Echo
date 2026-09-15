@@ -6,7 +6,7 @@
   2. tools/sessioncheck.py          会话数据层 + 兜底（19 项）
   3. tools/sessionfallback_check.py 兜底四场景 + 鉴权红线（34 项）
   4. tools/app_ext_check.py         P0 地基：四张表 + 身份层 + 迁移（55 项）
-  5. tools/providers_check.py       P1 模型网关：允许列表 + 三格式 + 真 HTTP + 参数下发（131 项）
+  5. tools/providers_check.py       P1 模型网关：允许列表 + 三格式 + 真 HTTP + 参数下发 + 原始帧诊断（145 项）
   6. tools/jscheck.py               index.html 内联 JS 语法
   7. tools/model_ui_check.mjs       设置页模型/参数前端（jsdom 真跑 index.html，35 项）
   8. tools/session_ui_check.mjs     会话归档/删除/改名前端（jsdom 真跑 index.html，40 项）
@@ -37,7 +37,7 @@ SUITES = [
     ("2/8  会话数据层 + 兜底", [PY, "sessioncheck.py"], {}),
     ("3/8  兜底四场景 + 鉴权红线", [PY, "sessionfallback_check.py"], {}),
     ("4/8  P0 地基：四张表 + 身份层", [PY, "app_ext_check.py"], {}),
-    ("5/8  P1 模型网关：允许列表 + 三格式 + 真 HTTP + 参数下发", [PY, "providers_check.py"], {}),
+    ("5/8  P1 模型网关：允许列表 + 三格式 + 真 HTTP + 参数下发 + 原始帧诊断", [PY, "providers_check.py"], {}),
     ("6/8  index.html 内联 JS 语法", [PY, "jscheck.py"], {}),
     ("7/8  设置页模型/参数前端（jsdom 真跑）", [NODE, "model_ui_check.mjs"],
      {"NODE_PATH": NODE_MODULES}),

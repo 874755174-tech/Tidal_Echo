@@ -5,6 +5,10 @@
 >
 > **一句话结论：展示层没缺（thinking 气泡是原版就完整具备的能力）。
 > 缺的是"往那条管道里灌 CoT"的三段水管，而且断点全在房子这一侧、不在前端。**
+>
+> 🆕 **2026-09-15 更新**：**第 1 步（丙）已落地** —— 只读诊断端点
+> `POST /app/ext/providers/raw` 已写好并验收（新增 14 项断言，网关验收 145/145；
+> 含一次**突变测试**验证「路径 A/B 判定」真会红）。**用法见第六节**。
 
 ---
 
@@ -93,7 +97,7 @@
 
 ---
 
-## 四、确诊办法（不花钱、不施工）
+## 四、确诊办法（✅ 2026-09-15 已落地）
 
 给房子加一个**只读诊断端点** `POST /app/ext/providers/raw`（真发一次最小调用，
 把上游返回的**原始 SSE 帧**原样回前 N 行，不做任何解析）。看三件事：
@@ -119,7 +123,7 @@
 |---|---|---|---|
 | **甲 · 等 P3（推荐）** | P1 尾巴只做①②（网关接住 reasoning 并放进出口帧的 `reasoning_content`），**不动 ③**；等换 KaelLife 时在**自己的代码里**直接发 `thinking_delta` | 换完身体就能看到 | 要多等一个阶段；但现在看不到是**结构性**的，硬做就得付下面的代价 |
 | **乙 · 内联绕行** | ① 网关把 reasoning **内联**进 `content`（`<thinking>…</thinking>` 前缀）+ ④ 前端把它**剥出来渲染成 thinking 气泡**（而不是丢掉） | ✅ 立刻能看到 | 🔴 **CoT 会跟着 reply 一起进 `messages` 正文并永久留在库里**；也把"thinking 是中间态、不进正文"的设计破了 |
-| **丙 · 只确诊不施工** | 只加第四节那个只读诊断端点，先把"上游到底给不给"钉死 | ❌ 看不到 | 最小改动、零风险；确诊完再选甲或乙 |
+| **丙 · 只确诊不施工** ✅ **已完成** | 只加第四节那个只读诊断端点，先把"上游到底给不给"钉死 | ❌ 看不到 | 最小改动、零风险；确诊完再选甲或乙 |
 
 **Bunny 的建议：丙 → 甲**。
 先用一个只读端点花十分钟确认上游到底把 CoT 放在哪（这决定后面所有事），
@@ -130,7 +134,52 @@
 
 ---
 
-## 六、顺带说清一件事（免得混淆）
+## 六、怎么用它（push + redeploy 之后，一条命令）
+
+### 第 1 步 · 先确认那个模型在允许列表里的**准确名字**
+
+    GET /app/ext/providers
+
+看 `providers` 里 `id == "relay"` 那项的 `models` 数组 —— 里面是 `PROVIDER_RELAY_MODELS`
+配的真实模型名。复制那个 thinking 模型的**完整字符串**（少一个字符就会 400 `model_not_allowed`）。
+
+### 第 2 步 · 打诊断端点
+
+PowerShell 里注意**用 `curl.exe`**（直接写 `curl` 是 `Invoke-WebRequest` 的别名，参数不通用）：
+
+```powershell
+$KK = "<你的 RELAY_SECRET>"
+curl.exe -s -X POST "https://kaelnlily79.zeabur.app/app/ext/providers/raw" `
+  -H "Authorization: Bearer $KK" -H "Content-Type: application/json" `
+  -d '{"provider_id":"relay","model":"<第 1 步的模型名>","prompt":"在吗","stream":true}' `
+  | python -m json.tool
+```
+
+想省 token 可以加 `"max_tokens": 32`；想看非流式就把 `"stream"` 改成 `false`。
+
+### 第 3 步 · 读返回
+
+| 看哪里 | 说明 |
+|---|---|
+| `hints.path` | **`A` / `B` / `C` / `A+B`** —— 自动判定的结论，先看这个 |
+| `hints.reasoning_fields` | 命中的独立字段名（有值 = 上游确实发了 CoT → 路径 A） |
+| `hints.inline_thinking` | `true` = CoT 被内联在正文里（路径 B） |
+| `frames` | **原始帧**（未经任何解析）。人工扫一眼，这是最终裁决 |
+| `request_body` | 我们**真正发出去**的 body —— 诊断"是不是少发了 `reasoning_effort`"的直接证据 |
+
+**三种结果分别意味着什么、下一步做什么：**
+
+- **`path = A`** → 上游给了、被我们丢了（断点①②）→ 做网关那两处纯新增改动（可离线验收）；③ 仍留给 P3
+- **`path = B`** → 上游把 CoT 内联在正文里 → 该动的是**前端**（断点④），不是网关；
+  或者走"乙"路线（⚠️ 代价：CoT 会进 `messages` 正文并永久留在库里）
+- **`path = C`** → **上游压根没给** → 问题在**请求参数**：配上
+  `PROVIDER_RELAY_EFFORT_PARAM`（见 `deploy/zeabur-env.example` 的 effort 段）再打一次，
+  多半是"要开 reasoning 才出 CoT"
+
+> 🔴 只有 `path = A` 才需要动网关；`B` 动前端；`C` 一行代码都不用改、只要配 env。
+> **先别急着施工，把 `path` 拿到手再说。**
+
+## 七、顺带说清一件事（免得混淆）
 
 `effort`（设置页那个推理强度）和 CoT **是同一把钥匙的两面**：
 

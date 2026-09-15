@@ -187,6 +187,40 @@ def install(relay, public_prefix: str = "/") -> None:
             return _err(e)
         return JSONResponse(out, status_code=200 if out.get("ok") else 400)
 
+    # ── 🆕 原始帧诊断（只读；CoT 链路确诊用，2026-09-15）────────────────────
+    #
+    # 为什么它必须存在：上面那些端点都会把上游响应**翻译**成我们的格式，
+    # 翻译就会把"我们不认识的字段"丢掉（`P.parse_stream` 只取 `delta.content`
+    # 就是这个道理）。于是"上游到底给没给思考链"这个问题，
+    # 用 `/llm/chat` 永远问不出答案 —— 得有一条**原样搬回来**的路。
+    #
+    # 🔴 只读：真发一次最小调用，把上游原话回给你，**不落库、不改链路、不解析**。
+    #    代价是**会花钱**（一次几十~几百 token），所以别当健康检查反复打。
+    @relay.app.post(base + "/providers/raw")
+    async def _raw(request: Request):
+        relay.check_auth(request)
+        body = await _read_json(request)
+        if body is _BAD:
+            return _bad_json()
+        pid = (body.get("provider_id") or "").strip() or P.default_provider()
+        if not pid:
+            return JSONResponse({"ok": False, "error": {
+                "code": "no_provider", "message": "没有任何可用供应商"}}, status_code=400)
+        try:
+            out = await G.raw_probe(
+                pid,
+                (body.get("model") or "").strip() or None,
+                prompt=(body.get("prompt") or "ping"),
+                stream=bool(body.get("stream", True)),
+                max_frames=body.get("max_frames") or 0,
+                max_tokens=body.get("max_tokens") or 0,
+            )
+        except P.ProviderError as e:
+            return _err(e)
+        except G.GatewayError as e:
+            return _err(e)
+        return JSONResponse(out, status_code=200 if out.get("ok") else 400)
+
     # ── 内部实现（两个真身；被下面的薄壳路由 + 别名端点共用）─────────────────
     #
     # 抽出来的原因：别名端点要按 body 的 stream 字段在这两者之间分流，

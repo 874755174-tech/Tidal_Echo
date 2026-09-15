@@ -226,7 +226,7 @@ CORSMiddleware
 | `app_ext/providers.py` | 供应商允许列表 + 三格式适配（openai / anthropic / gemini）+ 流解析。**纯逻辑，不发请求** → 可离线单测 |
 | `app_ext/llm_gateway.py` | 真发 HTTP、收 SSE（`httpx`，`trust_env=False`） |
 | `app_ext/llm_routes.py` | `/app/ext/providers` 与 `/app/ext/llm/*`（含 🆕 **OpenAI 路径别名**，见下节） |
-| `tools/providers_check.py` | 验收 **131** 项（纯逻辑 + 真 HTTP 往返 + 端点 + **通车仿真** + **参数下发/effort** + 红线） |
+| `tools/providers_check.py` | 验收 **145** 项（纯逻辑 + 真 HTTP 往返 + 端点 + **通车仿真** + **参数下发/effort** + 红线） |
 
 **三条铁律**（对应 `架构与产品路线规划.md` §4.1）：
 
@@ -287,6 +287,23 @@ CORSMiddleware
 
 一次十几 token，把该供应商所有模型都真调一遍，报出哪些通、哪些不通。
 
+🆕 **原始帧诊断**（CoT 链路确诊用，**只读**）：
+
+    POST /app/ext/providers/raw     {"provider_id":"relay","model":"<模型名>",
+                                     "prompt":"ping","stream":true,"max_frames":60}
+
+真发一次最小调用（默认 `max_tokens=64`），把上游**原话**原样回给你 ——
+**不解析、不落库、不改链路**。它存在的原因：别的端点都会把响应"翻译"成我们的格式，
+而翻译就会丢掉不认识的字段（`P.parse_stream` 只取 `delta.content`），
+所以"上游到底给没给思考链"这个问题，用 `/llm/chat` **永远问不出答案**。
+
+返回里最有用的是三样：`frames`（原始帧）、`request_body`（我们真正发出去的 body）、
+`hints`（自动判定**路径 A / B / C**，见 `CoT显示链路.md`）。
+
+🔴 两项安全约束：**只回 host+path、不回 query**（Gemini 的 key 在 query 里）、
+响应里出现 key 一律抹成 `***`；另有 `max_frames` / `max_chars` 护栏拦住超长响应。
+⚠️ 它**会花钱**（一次几十~几百 token），别当健康检查反复打。
+
 **新增环境变量见 `deploy/zeabur-env.example` 的 P1 段。** 逃生开关：
 `APP_EXT_LLM_DISABLED=1`（只关网关，四张表照常）。
 
@@ -334,11 +351,12 @@ CORSMiddleware
 > （`low/medium/high/max`），而设置页画的是 **5 档**（多一个 `xhigh`）→
 > 点 `xhigh` 会 `PUT 400`，看着像"没保存"。已补上，并加了一条断言守着（64b）。
 
-> ⏭️ **P1 到此为止。还没做的一件横跨三层的小专项**：**CoT（思考链）显示** ——
+> 🔍 **CoT（思考链）显示 —— 确诊工具已就位**（2026-09-15）：
 > Lily 2026-09-15 问"站的 opus4.6thinking 稳定出思考链，为什么 kaelhome 看不到"。
 > 诊断结论：前端 thinking 气泡本来就有、`thinking_delta` 通道也现成，
 > **缺的是往那条管道灌 CoT 的水管**，且卡口在身体（红线目录改不了）→ 天然属于 P3。
-> 详见 **`CoT显示链路.md`**（含四个断点、两条独立失效路径、确诊办法与三条路线）。
+> 已落地**第 1 步（丙）**：只读诊断端点 `POST /app/ext/providers/raw`（真发一次最小调用、回上游原话、自动判路径 A/B/C）。
+> 完整诊断见 **`CoT显示链路.md`**（四个断点、两条独立失效路径、三条路线）。
 
 ## `web/index.html`：8 处家装 + 1 处 bug 修复（**唯一被动过的原生文件**）
 
@@ -381,7 +399,7 @@ CORSMiddleware
 - `tools/sessions_manage_check.py` — 会话归档/删除/改名 后端（40 项）
 - `tools/session_ui_check.mjs` — 会话归档/删除/改名 前端（40 项，jsdom 真跑 `index.html`）
 - `tools/app_ext_check.py` — **P0 地基验收（55 项：库层 + HTTP 层 + 红线）**
-- `tools/providers_check.py` — **P1 模型网关验收（131 项：纯逻辑 + 真 HTTP + 端点 + OpenAI 路径别名 + 通车仿真 + 参数下发/effort + 红线；自带本地假上游，不需要真 key）**
+- `tools/providers_check.py` — **P1 模型网关验收（145 项：纯逻辑 + 真 HTTP + 端点 + OpenAI 路径别名 + 通车仿真 + 参数下发/effort + 红线；自带本地假上游，不需要真 key）**
 - `tools/model_ui_check.mjs` — 🆕 **设置页模型/参数前端（35 项，jsdom 真跑 `index.html`）**：
   专治"后端接口对、前端逻辑错"这类只有真跑页面才看得见的问题 ——
   假状态、PUT 失败不回滚、以及"拉不到就硬编一个"这三件事各有用例守着

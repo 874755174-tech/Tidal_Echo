@@ -319,10 +319,31 @@ class Mock(BaseHTTPRequestHandler):
 
         # ── OpenAI 兼容 ──
         if path.rstrip("/").endswith("/chat/completions"):
+            # 🆕 诊断端的两种"路径"演出开关（靠 body 里的**明确标记**，不猜自然语言）：
+            #     RAW-A → 帧里带独立字段 reasoning_content（路径 A：我们解析时丢了）
+            #     RAW-B → 正文里夹 <thinking>…</thinking>（路径 B：前端把它剥掉）
+            #   为什么要演这两条：/providers/raw 是用来**裁定**走哪条路的，
+            #   要是它连"演的"都认不出来，那结论就不可信。
+            flag = json.dumps(body, ensure_ascii=False)
+            want_a = "RAW-A" in flag
+            want_b = "RAW-B" in flag
             text = f"[{model}] {MOCK_TEXT}"
+            # ⚠️ 内联标记必须**整段成帧**：下面正文是按 3 字符切块的，
+            #    `<thinking>` 一旦被切开，就没有任何一帧还看得见它 ——
+            #    真实的站也是把 CoT 一次性放在开头那一帧（跟这儿一样）。
+            inline_part = "<thinking>我先想个两秒</thinking>" if want_b else ""
             if body.get("stream"):
                 chunks = [text[i:i + 3] for i in range(0, len(text), 3)]
-                frames = [
+                frames = []
+                if want_a:
+                    frames.append("data: " + json.dumps(
+                        {"choices": [{"delta": {"reasoning_content": "我先想个两秒"}}]},
+                        ensure_ascii=False) + "\n\n")
+                if inline_part:
+                    frames.append("data: " + json.dumps(
+                        {"choices": [{"delta": {"content": inline_part}}]},
+                        ensure_ascii=False) + "\n\n")
+                frames += [
                     "data: " + json.dumps(
                         {"choices": [{"delta": {"content": c}}]}, ensure_ascii=False) + "\n\n"
                     for c in chunks
@@ -333,9 +354,11 @@ class Mock(BaseHTTPRequestHandler):
                     ensure_ascii=False) + "\n\n")
                 frames.append("data: [DONE]\n\n")
                 return self._sse(frames)
+            msg = {"role": "assistant", "content": inline_part + text}
+            if want_a:
+                msg["reasoning_content"] = "我先想个两秒"
             return self._send(200, {
-                "choices": [{"message": {"role": "assistant", "content": text},
-                             "finish_reason": "stop"}],
+                "choices": [{"message": msg, "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 1, "completion_tokens": 3},
             })
 
@@ -662,6 +685,26 @@ def part_a2() -> None:
     except P.ProviderError as e:
         chk("64 effort 非字符串 → bad_param（干净 400）", e.code == "bad_param", e.code)
 
+    # ⑦ 🆕 77-79) `raw_hints` —— 诊断端那只"眼"。纯逻辑，不联网、不起服务。
+    #    单独验它的理由：**路径 A / B 的裁定全靠它**。它要是把 `<thinking>` 判成
+    #    "独立字段"，我们就会去改网关解析（其实该改前端），白忙一场还留隐患。
+    from app_ext.llm_gateway import raw_hints
+
+    a = raw_hints('data: {"choices":[{"delta":{"reasoning_content":"嗯"}}]}')
+    chk("🔴 77 独立字段 reasoning_content → 判定路径 A",
+        a["path"] == "A" and '"reasoning_content"' in a["reasoning_fields"]
+        and a["inline_thinking"] is False, json.dumps(a, ensure_ascii=False))
+
+    b = raw_hints('data: {"choices":[{"delta":{"content":"<thinking>嗯</thinking>好"}}]}')
+    chk("🔴 78 内联 <thinking> → 判定路径 B，**不**误判成 A",
+        b["path"] == "B" and b["inline_thinking"] is True
+        and b["reasoning_fields"] == [], json.dumps(b, ensure_ascii=False))
+
+    c = raw_hints('data: {"choices":[{"delta":{"content":"就是一句话"}}]}')
+    chk("🔴 79 什么都没有 → 判定路径 C（上游压根没给）",
+        c["path"] == "C" and not c["inline_thinking"] and not c["reasoning_fields"],
+        json.dumps(c, ensure_ascii=False))
+
     # ⑦ 档位表必须与设置页画出来的按钮一一对应
     #    少一档的后果：点了那个按钮 → PUT 400 → 看着像"没保存"，很难查。
     ui_levels = {"low", "medium", "high", "xhigh", "max"}
@@ -913,6 +956,90 @@ def part_c(tmp: Path) -> None:
         st, d = req(base + "/app/ext/providers/probe", method="POST", token=SECRET,
                     body={"provider_id": "relay", "all": True})
         chk("㊼ probe 端点 200", st == 200, f"{st} {json.dumps(d, ensure_ascii=False)[:120]}")
+
+        # ── 🆕 69-76) 原始帧诊断端点 /providers/raw（2026-09-15，CoT 确诊）──────
+        #
+        # 这块为什么非验不可：`/providers/raw` 是**裁定 CoT 链路走哪条路的唯一证据源**。
+        # 它要是自己撒谎（偷偷解析了、或者把 key/URL 漏出去），我们就会照着
+        # 错的证据去改错的层 —— 比不做还糟。所以它的"诚实性"必须有牙地守着。
+        RAW = "/app/ext/providers/raw"
+
+        # 69) 无密钥 → 401（fail-closed，和其余端点一致）
+        st, _ = req(base + RAW, method="POST", body={"provider_id": "relay"})
+        chk("🔴 69 raw 无密钥 → 401", st == 401, f"实际 {st}")
+
+        # 70) 路径 A：上游用独立字段 reasoning_content → raw 必须原样看见
+        st, d = req(base + RAW, method="POST", token=SECRET, body={
+            "provider_id": "relay", "model": MODEL, "prompt": "RAW-A 在吗", "stream": True,
+        })
+        blob = json.dumps(d, ensure_ascii=False)
+        chk("🔴 70 raw 流式 200", st == 200, f"{st} {blob[:160]}")
+        chk("🔴 70 原样带回 reasoning_content 帧（不解析、不丢）+ 判定路径 A",
+            d.get("hints", {}).get("path") == "A"
+            and "reasoning_content" in " ".join(d.get("hints", {}).get("reasoning_fields") or [])
+            and any("reasoning_content" in f for f in (d.get("frames") or [])),
+            blob[:240])
+
+        # 71) 🔴 正面对照：同一段上游响应，走老端点 → reasoning 被静默丢掉
+        #     （这一项把"断点①确实存在"从"推理"变成"证据"）
+        st2, lines2 = req_sse(base + "/app/ext/llm/chat", token=SECRET, body={
+            "provider_id": "relay", "model": MODEL,
+            "messages": [{"role": "user", "content": "RAW-A 在吗"}], "stream": True,
+        })
+        old_blob = "\n".join(lines2)
+        chk("🔴 71 对照：老端点出口帧里没有 reasoning_content（复现断点①）",
+            st2 == 200 and "reasoning_content" not in old_blob, old_blob[:200])
+
+        # 72) 路径 B：CoT 内联在正文里 → raw 要分得清（是 B，不是 A）
+        st, d = req(base + RAW, method="POST", token=SECRET, body={
+            "provider_id": "relay", "model": MODEL, "prompt": "RAW-B 在吗", "stream": True,
+        })
+        chk("🔴 72 认得出内联 <thinking> 且不误判成路径 A",
+            st == 200 and d.get("hints", {}).get("path") == "B"
+            and d["hints"].get("inline_thinking") is True,
+            json.dumps(d.get("hints"), ensure_ascii=False))
+
+        # 73) 非流式也能看（有的站只在非流式给 reasoning）
+        st, d = req(base + RAW, method="POST", token=SECRET, body={
+            "provider_id": "relay", "model": MODEL, "prompt": "RAW-A 在吗", "stream": False,
+        })
+        chk("🔴 73 raw 非流式也带回原始 JSON（含 reasoning_content）",
+            st == 200 and d.get("stream") is False
+            and "reasoning_content" in json.dumps(d.get("frames"), ensure_ascii=False),
+            json.dumps(d.get("frames"), ensure_ascii=False)[:200])
+
+        # 74) 🔴 三项泄漏红线：key / query / headers 一个都不许出去
+        st, d = req(base + RAW, method="POST", token=SECRET, body={
+            "provider_id": "relay", "model": MODEL, "prompt": "RAW-A", "stream": False,
+        })
+        blob = json.dumps(d, ensure_ascii=False)
+        chk("🔴 74 响应里没有 key", os.environ["PROVIDER_RELAY_KEY"] not in blob, blob[:120])
+        chk("🔴 74 只回 host+path，不回完整 URL（query 里可能有 key）",
+            "127.0.0.1:8794" in (d.get("host") or "")
+            and "?" not in (d.get("host") or "")
+            and (d.get("path") or "").endswith("/chat/completions"),
+            f"host={d.get('host')} path={d.get('path')}")
+        chk("🔴 74 不回 headers（Authorization / Bearer 不外泄）",
+            "Authorization" not in blob and "Bearer" not in blob, blob[:120])
+
+        # 75) request_body 回显：诊断"是不是少发了 reasoning_effort"的直接证据
+        st, d = req(base + RAW, method="POST", token=SECRET, body={
+            "provider_id": "relay", "model": MODEL, "prompt": "RAW-A 在吗", "stream": False,
+        })
+        rb = d.get("request_body") or {}
+        chk("🔴 75 回显 request_body（我们真正发出去的 body）",
+            rb.get("model") == MODEL and isinstance(rb.get("messages"), list)
+            and rb.get("max_tokens") == 64,
+            json.dumps(rb, ensure_ascii=False)[:220])
+
+        # 76) 护栏：截断要**真截断**，不是"假装截断"
+        st, d = req(base + RAW, method="POST", token=SECRET, body={
+            "provider_id": "relay", "model": MODEL, "prompt": "RAW-A 在吗",
+            "stream": True, "max_frames": 1,
+        })
+        chk("🔴 76 max_frames=1 → 只回 1 帧且标了 truncated",
+            st == 200 and d.get("frame_count") == 1 and d.get("truncated") is True,
+            f"frames={d.get('frame_count')} truncated={d.get('truncated')}")
 
         # 48-49) 回归
         st, _ = req(base + "/app/ext/me", token=SECRET)

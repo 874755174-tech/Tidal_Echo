@@ -44,6 +44,14 @@ READ_TIMEOUT = os.environ.get("LLM_READ_TIMEOUT", "").strip()
 READ_TIMEOUT = float(READ_TIMEOUT) if READ_TIMEOUT else None
 PROBE_MAX_TOKENS = int(os.environ.get("PROBE_MAX_TOKENS", "16") or 16)
 
+# 🆕 只读诊断 `raw_probe` 的护栏（2026-09-15，CoT 链路确诊用）
+#   为什么要护栏：这个端点会把**上游原话**搬回来，上游要是吐个 10MB，房子就没了。
+#   `FRAMES` 限行数、`CHARS` 限总长、`TOKENS` 限这次调用多贵（诊断只要看到字段结构，
+#   不需要长回答）。
+RAW_MAX_FRAMES = int(os.environ.get("LLM_RAW_MAX_FRAMES", "60") or 60)
+RAW_MAX_CHARS = int(os.environ.get("LLM_RAW_MAX_CHARS", "60000") or 60000)
+RAW_MAX_TOKENS = int(os.environ.get("LLM_RAW_MAX_TOKENS", "64") or 64)
+
 
 class GatewayError(Exception):
     """网络 / 上游层面的失败。`status` 是准备回给调用方的码。"""
@@ -246,6 +254,168 @@ async def probe_provider(provider_id: str) -> dict:
         "label": p["label"],
         "verified": [r["model"] for r in results if r["ok"]],
         "failed": [{"model": r["model"], "error": r.get("error")} for r in results if not r["ok"]],
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 🆕 只读诊断：把上游的**原话**搬回来（2026-09-15）
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 用途只有一句话：回答"上游到底给没给思考链、给在哪个字段里"。
+#
+#   路径 A  上游用独立字段（reasoning_content / reasoning / thinking …）
+#           → 会死在网关解析（我们只取 content）
+#   路径 B  上游把 CoT 内联在 content 里（<thinking>…</thinking>）
+#           → 网关原样透传，死在前端 stripInlineThinkingText
+#   路径 C  上游压根没给 → 问题在**请求参数**（多半要开 reasoning_effort/thinking）
+#
+# 这三条路的修法完全不同，所以**先确诊再施工**。`raw_hints` 就是那只眼睛。
+
+# 独立字段名（各家叫法不一，命中任一即算"独立字段"）。
+# 🔴 故意**带引号**写成 JSON 键的形状：不带引号的话，内联标记 `<thinking>` 里的
+#    "thinking" 会被误判成"独立字段"，**路径 A 和路径 B 就分不开了** ——
+#    而这两条路的修法完全不同，分不开等于没确诊。
+_RAW_REASONING_MARKS = (
+    '"reasoning_content"', '"reasoning_details"', '"reasoning"', '"thinking"',
+)
+# 内联标记（出现在正文里 = 路径 B）
+_RAW_INLINE_MARKS = ("<thinking", "</thinking", "```thinking", "[thinking]")
+
+
+def _redact(text: str, secret: str) -> str:
+    """把 key 从要回给外部的东西里抹掉。key 为空时原样返回（别把空串当 key 替换）。"""
+    s = (secret or "").strip()
+    if not s or not text:
+        return text
+    return text.replace(s, "***")
+
+
+def _redact_obj(obj, secret: str):
+    """递归脱敏任意 JSON 结构（诊断会把"我们发出去的 body"也回显，一并抹）。"""
+    s = (secret or "").strip()
+    if not s:
+        return obj
+    if isinstance(obj, dict):
+        return {k: _redact_obj(v, s) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact_obj(v, s) for v in obj]
+    if isinstance(obj, str):
+        return obj.replace(s, "***")
+    return obj
+
+
+def _url_parts(url: str) -> tuple:
+    """拆出 `(scheme://host, path)`。
+
+    🔴 **故意不返回 query** —— Gemini 那类供应商把 key 放在 query 里
+       （见 `providers.py` 的 gemini 分支），回完整 URL 等于把 key 发出去。
+    """
+    from urllib.parse import urlsplit      # 与 providers.py 的 `_env` 同款写法
+    u = urlsplit(url or "")
+    origin = (u.scheme + "://" + u.netloc) if u.netloc else ""
+    return origin, (u.path or "")
+
+
+def raw_hints(blob: str) -> dict:
+    """在原始响应里"扫一眼"，判定走的是路径 A / B / C。
+
+    ⚠️ 它只做**提示**，不替代人看原始帧 —— 它回答"该往哪儿看"。
+    """
+    low = (blob or "").lower()
+    inline = any(m in low for m in _RAW_INLINE_MARKS)
+    fields = [k for k in _RAW_REASONING_MARKS if k in low]
+    if inline and fields:
+        path = "A+B"
+    elif inline:
+        path = "B"
+    elif fields:
+        path = "A"
+    else:
+        path = "C"
+    return {"path": path, "reasoning_fields": fields, "inline_thinking": inline}
+
+
+async def raw_probe(
+    provider_id: Optional[str],
+    model: Optional[str],
+    prompt: str = "ping",
+    stream: bool = True,
+    max_frames: int = 0,
+    max_tokens: int = 0,
+) -> dict:
+    """只读诊断：真发一次**最小**调用，把上游**原始**响应原样带回来。
+
+    🔴 本函数**不调用** `P.parse_stream` / `P.parse_complete`。
+       它的全部价值就是"上游原话"；一旦解析，被丢掉的字段就再也看不见了 ——
+       而那恰好就是我们要查的东西。
+    🔴 不写库、不改状态：只读上游，只回内容。
+    🔴 只回 host + path（不回 query，见 `_url_parts`），响应里出现 key 一律抹成 `***`。
+    """
+    p, mid = P.resolve(provider_id, model)
+    req = {
+        "system": "",
+        "messages": [{"role": "user", "content": (prompt or "ping")}],
+        "params": {"max_tokens": max(1, int(max_tokens or RAW_MAX_TOKENS)), "temperature": 0},
+        "stream": bool(stream),
+    }
+    # 走同一个 adapt → 回显的 request_body 就是"我们真正发给上游的东西"
+    # （诊断"是不是少发了 reasoning_effort"时，这一项是直接证据）
+    url, headers, body = P.adapt(p["id"], mid, req)
+    key = (p.get("key") or "").strip()
+
+    n_cap = max(1, min(int(max_frames or RAW_MAX_FRAMES), 200))
+    t0 = time.time()
+    frames: list = []
+    truncated = False
+    total = 0
+    status = 0
+
+    try:
+        async with _client(stream=bool(stream)) as client:
+            if stream:
+                async with client.stream("POST", url, headers=headers, json=body) as resp:
+                    status = resp.status_code
+                    if resp.status_code >= 400:
+                        raw = (await resp.aread()).decode("utf-8", "replace")
+                        frames.append(_redact(("HTTP %d\n%s" % (resp.status_code, raw))
+                                              [:RAW_MAX_CHARS], key))
+                    else:
+                        async for line in resp.aiter_lines():
+                            if not (line or "").strip():
+                                continue        # 空行只是 SSE 帧分隔，无信息量
+                            if len(frames) >= n_cap or total + len(line) > RAW_MAX_CHARS:
+                                truncated = True
+                                break       # 提前跳出 → 连接关闭 → 上游也停，不白烧钱
+                            frames.append(_redact(line, key))
+                            total += len(line)
+            else:
+                resp = await client.post(url, headers=headers, json=body)
+                status = resp.status_code
+                txt = resp.text or ""
+                if len(txt) > RAW_MAX_CHARS:
+                    txt, truncated = txt[:RAW_MAX_CHARS], True
+                frames.append(_redact(txt, key))
+    except httpx.TimeoutException as e:
+        raise GatewayError("timeout", f"连 {p['label']} 超时：{type(e).__name__}", 504)
+    except httpx.HTTPError as e:
+        raise GatewayError("network", f"连不上 {p['label']}：{type(e).__name__}: {e}", 502)
+
+    origin, path = _url_parts(url)
+    blob = "\n".join(frames)
+    return {
+        "ok": 0 < status < 400,
+        "provider_id": p["id"],
+        "model": mid,
+        "host": origin,               # ⚠️ 无 query（gemini 的 key 在 query）
+        "path": path,
+        "status": status,
+        "stream": bool(stream),
+        "request_body": _redact_obj(body, key),
+        "frames": frames,
+        "frame_count": len(frames),
+        "truncated": truncated,
+        "hints": raw_hints(blob),
+        "ms": int((time.time() - t0) * 1000),
     }
 
 
