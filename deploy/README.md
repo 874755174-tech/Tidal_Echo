@@ -226,7 +226,7 @@ CORSMiddleware
 | `app_ext/providers.py` | 供应商允许列表 + 三格式适配（openai / anthropic / gemini）+ 流解析。**纯逻辑，不发请求** → 可离线单测 |
 | `app_ext/llm_gateway.py` | 真发 HTTP、收 SSE（`httpx`，`trust_env=False`） |
 | `app_ext/llm_routes.py` | `/app/ext/providers` 与 `/app/ext/llm/*`（含 🆕 **OpenAI 路径别名**，见下节） |
-| `tools/providers_check.py` | 验收 **117** 项（纯逻辑 + 真 HTTP 往返 + 端点 + **通车仿真** + 红线） |
+| `tools/providers_check.py` | 验收 **131** 项（纯逻辑 + 真 HTTP 往返 + 端点 + **通车仿真** + **参数下发/effort** + 红线） |
 
 **三条铁律**（对应 `架构与产品路线规划.md` §4.1）：
 
@@ -290,11 +290,57 @@ CORSMiddleware
 **新增环境变量见 `deploy/zeabur-env.example` 的 P1 段。** 逃生开关：
 `APP_EXT_LLM_DISABLED=1`（只关网关，四张表照常）。
 
-> ⚠️ **这组 `PROVIDER_*` 暂时不替代 `LLM_API_*`**：临时人偶现在还是自己调模型。
-> 网关是"车道修好了但还没通车" —— 等 P3 接 KaelLife 时才会把身体指过来。
-> 在那之前它已经有用：**能真实验证模型名通不通**（那是以前完全没法做的事）。
+> ✅ **2026-09-15 通车已完成**（比规划提前了一个阶段）：临时人偶那三个 `LLM_API_*` env 已
+> 指向房子，`PROVIDER_*` 与 `LLM_API_*` **两组并存** —— `LLM_API_*` 是"身体往哪发"，
+> `PROVIDER_*` 是"房子往哪发"，**删任一组人偶即哑**。想回退就改回原来那三个值。
 
-## `web/index.html`：7 处家装 + 1 处 bug 修复（**唯一被动过的原生文件**）
+### 🆕 P1 收尾（2026-09-15）：参数真的下发 + 设置页接真
+
+第六道缝还差最后两件事（对应规划 §11.1 的 ⑥ 模型选择 UI、⑦ 参数下发），这一轮补齐：
+
+**① `settings` 表里的参数，终于真的进了请求**（`llm_routes._pick`）
+
+以前网关**只拿 `provider_id` / `model_id`**，`max_tokens` / `temperature` / `top_p` / `effort`
+**存得下但从来不发** —— 表现会是"设置页看着生效了、实际一个字没变"，
+是界面全程诚实、链路中途掉链子的那类 bug（最难发现）。现在：
+
+    优先级：**请求体显式传的 > settings 表里的 > 什么都不传（网关默认）**
+
+🔴 只补空、**不覆盖**：body 里显式传 `temperature: 0` 是"真的要 0"，不能被 settings 顶掉。
+`context_keep` / `context_trigger` **不在这里下发** —— 它们管"发多少历史给模型"，
+属于上下文管理（P2）；网关不替调用方裁历史（网关猜历史 = 两处都以为对方在管）。
+
+**② `effort` 能翻译成上游字段了，但默认不发**
+
+"推理强度"**没有跨供应商统一字段名**：OpenAI 系叫 `reasoning_effort`，Anthropic 原生是
+`thinking`，不少中转站压根不需要（模型名带 `-thinking` 自己就出 CoT），
+还有些站对**不认识的字段直接 400**。所以默认发一个猜出来的字段名 = 通车当天把自己搞挂。
+
+    PROVIDER_RELAY_EFFORT_PARAM=reasoning_effort           ← 要发的字段名（不配就不发）
+    PROVIDER_RELAY_EFFORT_MAP={"xhigh": "high"}            ← 可选：档位改名
+    PROVIDER_RELAY_EFFORT_MAP={"xhigh": {"type": "enabled", "budget_tokens": 10000}}
+                                                           ← 值也可以是嵌套对象
+    映射表写坏 → 按原值发（可选项不该拖垮整条请求）
+
+**③ 设置页「模型 / effort / 上下文阈值」三个假按键接真**（`web/index.html`，第 8 处家装）
+
+原版这 4 个模型按钮是硬编码的 `Opus 4.6 / 4.7 / 4.8 / Fable 5`，点了只换个底色。
+现在从 `GET /app/ext/providers` 动态渲染**真实允许列表**（两级：供应商 → 模型），
+选中即 `PUT /app/ext/settings` 落库；另加一个「验证模型名」按钮（真发一次最小调用）。
+两条自我约束：**① 绝不 paint 假状态**（拉不到就写"读不到"）；
+**② 界面的真相源是库不是 localStorage**（`PUT` 成功才认，400 就回滚并把原因写在提示上）。
+
+> ⚠️ 顺手对齐了一个会静默失效的不一致：`EFFORT_VALUES` 原来只有 4 档
+> （`low/medium/high/max`），而设置页画的是 **5 档**（多一个 `xhigh`）→
+> 点 `xhigh` 会 `PUT 400`，看着像"没保存"。已补上，并加了一条断言守着（64b）。
+
+> ⏭️ **P1 到此为止。还没做的一件横跨三层的小专项**：**CoT（思考链）显示** ——
+> Lily 2026-09-15 问"站的 opus4.6thinking 稳定出思考链，为什么 kaelhome 看不到"。
+> 诊断结论：前端 thinking 气泡本来就有、`thinking_delta` 通道也现成，
+> **缺的是往那条管道灌 CoT 的水管**，且卡口在身体（红线目录改不了）→ 天然属于 P3。
+> 详见 **`CoT显示链路.md`**（含四个断点、两条独立失效路径、确诊办法与三条路线）。
+
+## `web/index.html`：8 处家装 + 1 处 bug 修复（**唯一被动过的原生文件**）
 
 按 Lily 的反馈做的"家装"。
 **全部是 UI、登录体验与提示文案，不含任何 KaelLife 逻辑**，
@@ -311,10 +357,12 @@ CORSMiddleware
 | 5 | 会话列表**失败/降级时给出可读提示**（原版静默） | `#sessionNotice` + `setSessionNotice()` | 原版 `catch(_){ apiSessions=[] }` 静默清空，用户只看到"按钮空了"。现在会说明是"AI 身体不在，列表是整理出来的"还是"连不上"，并说清消息本身没受影响 |
 | 6 | 会话条目「改名 / 归档 / 删除」+ 二次确认 + 归档区 | 配套后端 `deploy/sessions_manage.py`（新路径 `/app/sessions/manage/*`） | 原版只有"删掉整段对话"的入口、且没有归档概念。归档（纯可逆）与清空（标记式、物理行保留）**语义分开** |
 | 7 | 修透明弹层：删除确认框与会话面板**整片透明** | `.confirm-card` / `.session-pop` | 🔴 `--panel-bg` / `--seg-line` **在这个文件里从未定义过** → CSS 属性被整条**静默丢弃**（不报错、控制台无提示）。修法：改成不依赖变量的实色 + 毛玻璃。commit `cad47ce` |
+| 8 | 设置页「模型 / effort / 上下文阈值」三个**假按键接真** + 新增「验证模型名」 | `#modelProvSeg` / `#modelSeg` / `#modelHint` / `#modelProbeRow` + `refreshModelCard()` 系列 | 🆕 P1 收尾（2026-09-15）。原版这 4 个模型按钮是硬编码 `Opus 4.6/4.7/4.8/Fable 5`、点了只换底色，且什么都不存。现在只显示**服务端允许列表**里的东西、选中即落库（见本文 P1 收尾一节） |
 | 补丁 | 🔴 **修一个原版就有的会话归属 bug**：在「旧主线 / Desktop 记录」（虚拟会话 `__legacy__`）里发消息，回复会落到别的会话 | 新增 `ensureRealSession()`（`doSend` / `apiSend` 两个发送入口各拦一道）+ 页面级常驻提示条（`#pageNotice` / `LEGACY_NOTICE`，2026-09-14 晚从面板内挪到页面级） | 根因：**会话归属有两份**（前端视图 / 身体全局）→ 详见 `扩展边界.md` §2.5。**这一条是修 bug，不是家装**（唯一一处涉及行为的改动） |
 
 其中 2、3 各是一处常量，改回原值即可；1 是一行 CSS；4、5、6 是新增纯前端函数；
-7 是修一个原版就有的 CSS 变量 bug；**补丁**那条是修一个原版就有的**会话归属 bug**（唯一涉及行为的改动）。
+7 是修一个原版就有的 CSS 变量 bug；8 是 P1 收尾（新增纯前端函数，且**首次把设置页接到真实后端**）；
+**补丁**那条是修一个原版就有的**会话归属 bug**（唯一涉及行为的改动）。
 
 ## 相关文件
 
@@ -326,12 +374,15 @@ CORSMiddleware
 - `deploy/app_ext/` — **P0 地基**：四张表（`users`/`settings`/`sessions`/`memories`）+ 身份层 + `/app/ext/*`
 - `deploy/app_ext/providers.py` · `llm_gateway.py` · `llm_routes.py` — **P1 模型网关**：供应商允许列表 + 三格式适配 + `/app/ext/providers`、`/app/ext/llm/*`（含 **OpenAI 路径别名** `/v1/chat/completions`，通车前置）
 - `deploy/zeabur-env.example` — 环境变量清单（哪些必填、哪些别填；**P1 段在最后**）
-- `tools/verify_all.py` — **一次跑完全部验收**（六套 + 红线，exit 0 = 全绿）
+- `tools/verify_all.py` — **一次跑完全部验收**（八套 + 红线，exit 0 = 全绿；跑前先确认 8080 空）
 - `tools/secaudit.py` — 访问控制体检（21 项，不连公网）
 - `tools/sessioncheck.py` — 会话数据层 + 兜底断言（19 项）
 - `tools/sessionfallback_check.py` — 兜底四场景 + 鉴权红线（34 项）
 - `tools/sessions_manage_check.py` — 会话归档/删除/改名 后端（40 项）
 - `tools/session_ui_check.mjs` — 会话归档/删除/改名 前端（40 项，jsdom 真跑 `index.html`）
 - `tools/app_ext_check.py` — **P0 地基验收（55 项：库层 + HTTP 层 + 红线）**
-- `tools/providers_check.py` — **P1 模型网关验收（117 项：纯逻辑 + 真 HTTP + 端点 + OpenAI 路径别名 + 通车仿真 + 红线；自带本地假上游，不需要真 key）**
+- `tools/providers_check.py` — **P1 模型网关验收（131 项：纯逻辑 + 真 HTTP + 端点 + OpenAI 路径别名 + 通车仿真 + 参数下发/effort + 红线；自带本地假上游，不需要真 key）**
+- `tools/model_ui_check.mjs` — 🆕 **设置页模型/参数前端（35 项，jsdom 真跑 `index.html`）**：
+  专治"后端接口对、前端逻辑错"这类只有真跑页面才看得见的问题 ——
+  假状态、PUT 失败不回滚、以及"拉不到就硬编一个"这三件事各有用例守着
 - `tools/jscheck.py` — 抽出 `index.html` 内联 JS 做语法检查

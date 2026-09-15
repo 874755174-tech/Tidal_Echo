@@ -90,11 +90,35 @@ PROVIDER_RELAY_MODELS=claude-opus-4-6
 # APP_EXT_LLM_DISABLED=1    只关模型网关（四张表照常）
 # APP_EXT_DISABLED=1        整个扩展包关掉（回到 P0 之前）
 #
+# ── 🆕 effort（推理强度）怎么发到上游（2026-09-15 加）──────────────────────
+# 🔴 **默认不发，要发才配。** 设置页那个 effort 分段控件现在会**真的落库**，
+#    但它对应上游哪个字段名**各家站不统一**，所以房子不猜：
+#
+#     OpenAI 系       → reasoning_effort
+#     Anthropic 原生  → thinking（值是对象：{"type":"enabled","budget_tokens":N}）
+#     不少中转站      → 压根不需要（模型名里带 -thinking 就自己出 CoT）
+#     还有些站        → 对**不认识的字段直接 400**（这就是不敢给默认值的原因）
+#
+# 配法（改行为不用改代码，和 PROVIDER_<NAME>_MODELS 是同一套思路）：
+#
+# PROVIDER_RELAY_EFFORT_PARAM=reasoning_effort
+#   ↑ 要发的字段名。**不填 = 不下发**（推荐先留空，想试再填）。
+#
+# PROVIDER_RELAY_EFFORT_MAP={"xhigh":"high"}
+#   ↑ 可选：把设置页的档位（low/medium/high/xhigh/max）改名成上游认的值。
+#     值也可以是对象，例如：
+#     PROVIDER_RELAY_EFFORT_MAP={"xhigh":{"type":"enabled","budget_tokens":10000}}
+#     映射表写坏了不影响请求（会按原值发，不会 400）。
+#
+# ⚠️ 这组是"锦上添花"，不是通车必需。CoT（思考链）的显示链路还有三处要单独做，
+#    见 kael-home 的 `CoT显示链路.md`。
+#
 # ⚠️ 这组**不替代**上面的 LLM_API_*：临时人偶现在还是自己调模型（那三个 env）。
 #    两组**并存**，删了 LLM_API_* 人偶立刻不会说话。
 #
-# ── 🆕 P3 通车：让身体改指着房子说话（只改上面那三个，完全可逆）──────────
-#    通车后链路变成：身体 → 房子网关 → 上游。**key 从此只住在房子这一层。**
+# ── ✅ P3 通车（2026-09-15 已完成）：身体改指着房子说话 ────────────────────
+#    链路现在是：身体 → 房子网关 → 上游。**key 从此只住在房子这一层。**
+#    下面三行就是当时改的（想回退：把那三个值改回中转站原来的即可，不用动代码）。
 #
 #      LLM_API_BASE=https://你的域名/app/ext/llm/v1     ← 🔴 注意结尾的 /v1
 #      LLM_API_KEY=<填 RELAY_SECRET，不再填中转站的 key>

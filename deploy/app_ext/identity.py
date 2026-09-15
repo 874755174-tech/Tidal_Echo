@@ -83,7 +83,13 @@ WRITABLE_FIELDS = {
     "effort": str,
 }
 
-EFFORT_VALUES = {"low", "medium", "high", "max"}
+# effort 的合法档位。
+# ⚠️ 必须与设置页 UI 上真实画出来的按钮**一一对应** —— 前端 `#effortSeg` 是
+#    low / medium / high / xhigh / max 五档（`index.html` 那一段）。
+#    少一个的后果是"点了那个按钮 → PUT 400 → 看着像没保存"，很难查。
+#    🆕 2026-09-15：补 `xhigh`（原来只有四档，与 UI 对不上）。
+#    档位是"界面语言"，翻译成上游真字段是 `providers._effort_payload` 的事。
+EFFORT_VALUES = {"low", "medium", "high", "xhigh", "max"}
 PERSONA_MAX_LEN = 20_000
 EXTRA_MAX_BYTES = 8_000
 

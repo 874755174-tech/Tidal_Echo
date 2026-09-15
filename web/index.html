@@ -70,6 +70,7 @@
     --think-flourish: rgba(99, 121, 142, 0.52);
     --think-label: #6A7E8E;
     --think-body: #56697A;
+    --model-warn: #A2604A;      /* 🆕 设置页"这里不对"的低饱和赭石；harbor 主题它继承即可 */
     --composer-bg: #EEF4FA;
     --field-bg: rgba(247,250,252,.92);
     --field-line: rgba(151,169,181,.18);
@@ -1149,10 +1150,18 @@
     font-family: var(--font-en), var(--font-cn);
     cursor:help; user-select:none;
   }
-  .push-hint{
+  .push-hint, .model-hint{
     margin-top:9px; font-size:11.5px; line-height:1.55;
     color: var(--text-faint); letter-spacing:.01em;
   }
+  /* 🆕 模型卡片（P1 收尾 2026-09-15）：允许列表里模型名长短不一、个数不定，
+     所以给它一个"允许换行"的分段控件变体，别硬挤成一排把字压成点 */
+  .model-hint[data-kind="bad"]{ color: var(--model-warn); }
+  .model-hint[data-kind="good"]{ color: var(--accent); }
+  .segmented.wrap{ grid-auto-flow:row; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); }
+  .segmented button:disabled{ opacity:.4; cursor:not-allowed; }
+  .model-stack{ display:flex; flex-direction:column; gap:9px; }
+  .model-cap{ color: var(--text-faint); font-size:11px; letter-spacing:.02em; margin-bottom:6px; }
 
   /* segmented control */
   .segmented{
@@ -2116,20 +2125,37 @@
         <div class="push-hint" id="brainHint"></div>
       </section>
 
-      <!-- 模型选择（占位 · 假按键，以后接真切换）-->
+      <!-- 🆕 模型（P1 收尾 2026-09-15：原来的假按键已接真）
+           数据来自 GET /app/ext/providers —— **只显示服务端允许列表里的**东西，
+           所以拉不到就明说拉不到，绝不 paint 一个假的选中态。 -->
       <section class="settings-card">
-        <div class="settings-label">模型选择</div>
-        <div class="segmented" id="modelSeg" role="group" aria-label="模型选择">
-          <button type="button" data-val="Opus 4.6">Opus 4.6</button>
-          <button type="button" data-val="Opus 4.7" class="active">Opus 4.7</button>
-          <button type="button" data-val="Opus 4.8">Opus 4.8</button>
-          <button type="button" data-val="Fable 5">Fable 5</button>
+        <div class="settings-label">模型 <i class="info-i" title="只列出服务端允许列表里的供应商与模型（没有地址、没有密钥）。选定即落库，下次醒来还是它。列表空 = 服务端还没配 PROVIDER_* 环境变量。">i</i></div>
+        <div class="model-stack">
+          <div>
+            <div class="model-cap">供应商</div>
+            <div class="segmented wrap" id="modelProvSeg" role="group" aria-label="供应商"></div>
+          </div>
+          <div>
+            <div class="model-cap">模型</div>
+            <div class="segmented wrap" id="modelSeg" role="group" aria-label="模型选择"></div>
+          </div>
         </div>
+        <div class="model-hint" id="modelHint">正在读取允许列表…</div>
       </section>
 
-      <!-- effort（占位 · 假按键）-->
+      <!-- 🆕 验证模型名（真发一次最小调用。同名工具在探测器里也有一份，这里是随身版）-->
+      <button class="action-row" id="modelProbeRow" type="button">
+        <span class="action-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/><circle cx="12" cy="12" r="4.2"/></svg></span>
+        <span class="action-name">验证模型名</span>
+        <span class="action-value" id="modelProbeValue">真发一次最小调用</span>
+        <span class="action-chevron"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></span>
+      </button>
+
+      <!-- effort（🆕 P1 收尾：已接真 · 落库 + 可下发上游）
+           ⚠️ 下发这一步是**默认关**的：各家站的字段名不统一（reasoning_effort / thinking / …），
+              不认识的字段有的站直接 400。要发就在 Zeabur 按 PROVIDER_<名字>_EFFORT_PARAM 配一行。 -->
       <section class="settings-card">
-        <div class="settings-label">effort <i class="info-i" title="推理强度：越高越细，耗时越长">i</i></div>
+        <div class="settings-label">effort <i class="info-i" title="推理强度：越高越细、越慢。选定即落库；要真的发给上游，还得在服务端配 PROVIDER_…_EFFORT_PARAM 指定字段名（没配就不发，避免被不认识的字段拒掉）。">i</i></div>
         <div class="segmented" id="effortSeg" role="group" aria-label="effort">
           <button type="button" data-val="low">low</button>
           <button type="button" data-val="medium">medium</button>
@@ -2137,14 +2163,15 @@
           <button type="button" data-val="xhigh" class="active">xhigh</button>
           <button type="button" data-val="max">max</button>
         </div>
+        <div class="model-hint" id="effortHint"></div>
       </section>
 
-      <!-- 上下文阈值（占位 · 假按键）-->
+      <!-- 上下文阈值（🆕 P1 收尾：已接真 · 落库。⚠️ 真正"裁历史"要等 P2 的上下文管理）-->
       <section class="settings-card">
-        <div class="settings-label">上下文阈值 <i class="info-i" title="上下文阈值：保留多少 / 满多少触发">i</i></div>
+        <div class="settings-label">上下文阈值 <i class="info-i" title="保留多少历史给模型（满 200k 触发整理）。选定即落库；真正生效要等 P2 的上下文管理把它读出来用。">i</i></div>
         <div class="context-slider-wrap">
           <input class="context-slider" id="contextSlider" type="range" min="0" max="100" value="40" aria-label="上下文阈值">
-          <div class="context-scale"><span>保留60k</span><span>满200k触发</span></div>
+          <div class="context-scale"><span id="contextKeepLabel">保留60k</span><span>满200k触发</span></div>
         </div>
       </section>
 
@@ -2417,6 +2444,10 @@ const profileClose = $("#profileClose"), moreBtn = $("#moreBtn");
 const profileAvatarBtn = $("#profileAvatarBtn"), profileNameEl = $("#profileName");
 const profileNameInput = $("#profileNameInput"), profileNameEdit = $("#profileNameEdit");
 const modelSeg = $("#modelSeg"), effortSeg = $("#effortSeg"), contextSlider = $("#contextSlider");
+/* 🆕 P1 收尾：模型卡片的真实控件（原来 modelSeg 是硬编码 4 个假按钮） */
+const modelProvSeg = $("#modelProvSeg"), modelHintEl = $("#modelHint");
+const modelProbeRow = $("#modelProbeRow"), modelProbeValue = $("#modelProbeValue");
+const effortHintEl = $("#effortHint"), contextKeepLabel = $("#contextKeepLabel");
 const resetRow = $("#resetRow"), swapRow = $("#swapRow"), resumeRow = $("#resumeRow");
 const statusCopy = $("#statusCopy"), statusSidEl = $("#statusSid"), statusUsedEl = $("#statusUsed");
 const sessionBtn = $("#sessionBtn"), sessionPop = $("#sessionPop"), sessionList = $("#sessionList"), sessionNewBtn = $("#sessionNewBtn"), sessionNotice = $("#sessionNotice"), pageNotice = $("#pageNotice");
@@ -2527,6 +2558,7 @@ function openProfile(){
   // double rAF so the slide-in runs from the off-screen state
   requestAnimationFrame(() => requestAnimationFrame(() => profilePanel.classList.add("open")));
   refreshContextStatus();
+  refreshModelCard();          // 🆕 打开设置页时对齐一次"模型 / effort / 上下文"的真实值
 }
 function closeProfile(){
   if (!profilePanel) return;
@@ -3285,27 +3317,267 @@ function showToast(msg){
   toastTimer = setTimeout(() => toastEl.classList.remove("show"), 1600);
 }
 
-function wireSegmented(seg, storeKey){
+function wireSegmented(seg, storeKey, onPick){
   if (!seg) return;
-  const btns = Array.prototype.slice.call(seg.querySelectorAll("button"));
-  const saved = localStorage.getItem(storeKey);
-  if (saved && btns.some((b) => b.dataset.val === saved)){
-    btns.forEach((b) => b.classList.toggle("active", b.dataset.val === saved));
+  const btns = () => Array.prototype.slice.call(seg.querySelectorAll("button"));
+  const saved = storeKey ? localStorage.getItem(storeKey) : null;
+  if (saved && btns().some((b) => b.dataset.val === saved)){
+    btns().forEach((b) => b.classList.toggle("active", b.dataset.val === saved));
   }
   seg.addEventListener("click", (e) => {
     const b = e.target.closest("button");
-    if (!b || !seg.contains(b)) return;
-    btns.forEach((x) => x.classList.toggle("active", x === b));
-    try{ localStorage.setItem(storeKey, b.dataset.val); }catch(_){}
+    if (!b || !seg.contains(b) || b.disabled) return;
+    btns().forEach((x) => x.classList.toggle("active", x === b));
+    if (storeKey){ try{ localStorage.setItem(storeKey, b.dataset.val); }catch(_){} }
+    if (typeof onPick === "function") onPick(b.dataset.val, b);   // 🆕 真落库
   });
 }
-wireSegmented(modelSeg, "companion_pick_model");
-wireSegmented(effortSeg, "companion_pick_effort");
 
+/* ════════════ 模型 / 参数（🆕 P1 收尾 2026-09-15：假按键接真）════════════
+   四个端点全在房子（deploy/app_ext），KaelLife 一个字符不碰：
+     GET  /app/ext/providers        允许列表（**没有地址、没有密钥**，只有 id 与模型名）
+     GET  /app/ext/settings         当前选择与参数
+     PUT  /app/ext/settings         写入（服务端白名单；非白名单字段静默丢弃）
+     POST /app/ext/providers/probe  真发一次最小调用，回答"这个模型名到底对不对"
+
+   🔴 两条自我约束（这是这张卡片唯一容易做错的地方）：
+     ① **绝不 paint 假状态**。拉不到就写"读不到"，不把硬编码默认值装成"已选中"。
+        原版这 4 个按钮是写死的 Opus 4.6/4.7/4.8/Fable 5，点了只是换个底色 —— 那才是 bug。
+     ② **界面的真相源是库，不是 localStorage**。选中 = `PUT` 成功才算数；400 就回滚并把
+        原因写在 hint 上。所以下面每个 handler 都是"先 await PUT，再翻界面"。 */
+const CONTEXT_MAX_TOKENS = 200000;   // 与服务端/滑块右端"满200k触发"同一个数
+const MODEL_UI = {
+  providers: [], selected: { provider_id: "", model_id: "" },
+  defaultProvider: "", loaded: false, busy: false,
+};
+
+function modelHint(text, kind){
+  if (!modelHintEl) return;
+  modelHintEl.textContent = text || "";
+  if (kind) modelHintEl.dataset.kind = kind; else delete modelHintEl.dataset.kind;
+}
+function paintButtons(seg, items, activeVal){
+  if (!seg) return;
+  seg.innerHTML = "";
+  items.forEach((it) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("data-val", it.val);
+    b.textContent = it.label;
+    if (it.title) b.title = it.title;
+    if (it.disabled) b.disabled = true;
+    if (it.val === activeVal) b.classList.add("active");
+    seg.appendChild(b);
+  });
+}
+function activeSegVal(seg){
+  const b = seg && seg.querySelector("button.active");
+  return b && b.dataset.val ? b.dataset.val : "";
+}
+function providerOf(id){
+  const hit = (MODEL_UI.providers || []).filter((p) => p.id === id);
+  return hit.length ? hit[0] : null;
+}
+/* 纯重画（不发请求）。返回这次画出来的"实际选中"，调用方可据此写 hint。 */
+function paintModelCard(){
+  const list = MODEL_UI.providers || [];
+  const usable = list.filter((p) => p.available);
+  const want = MODEL_UI.selected.provider_id || MODEL_UI.defaultProvider || "";
+  const wp = providerOf(want);
+  const activeProv = (wp && wp.available) ? want : ((usable[0] && usable[0].id) || "");
+  paintButtons(modelProvSeg, list.map((p) => ({
+    val: p.id,
+    label: p.label,
+    disabled: !p.available,
+    title: !p.available
+      ? (p.needs_base ? "还没配地址（服务端缺 PROVIDER_" + String(p.id).toUpperCase() + "_BASE）" : "还没配密钥")
+      : (p.key_masked ? ("key " + p.key_masked) : ""),
+  })), activeProv);
+
+  const p = providerOf(activeProv);
+  const models = (p && p.models) || [];
+  const sel = MODEL_UI.selected;
+  const keep = (sel.model_id && models.indexOf(sel.model_id) >= 0) ? sel.model_id : "";
+  const activeModel = keep || (p && p.default_model) || "";
+  paintButtons(modelSeg, models.map((m) => ({ val: m, label: m })), activeModel);
+  return { activeProv, activeModel, usable: usable.length, total: list.length };
+}
+async function apiModelGet(path){
+  const r = await fetch(`${API_BASE}${path}`, { headers: authHeaders() });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+async function apiSettingsPut(patch){
+  const r = await fetch(`${API_BASE}/app/ext/settings`, {
+    method: "PUT",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  let d = {};
+  try{ d = await r.json(); }catch(_){}
+  if (!r.ok) throw new Error((d && (d.detail || d.reason)) || ("HTTP " + r.status));
+  return d;
+}
+
+/* 拉一次允许列表 + 当前设置，重画整张卡片。`force` 用于手动刷新。 */
+async function refreshModelCard(force){
+  if (MODEL_UI.busy) return;
+  if (MODEL_UI.loaded && !force) return;
+  if (USE_MOCK || !secret){
+    modelHint("未登录：模型由服务端决定，这里不显示", "");
+    paintButtons(modelProvSeg, [], "");
+    paintButtons(modelSeg, [], "");
+    return;
+  }
+  MODEL_UI.busy = true;
+  modelHint("正在读取允许列表…", "");
+  try{
+    const cat = await apiModelGet("/app/ext/providers");
+    MODEL_UI.providers = (cat && cat.providers) || [];
+    MODEL_UI.defaultProvider = (cat && cat.default_provider) || "";
+    const sel = (cat && cat.selected) || {};
+    MODEL_UI.selected = { provider_id: sel.provider_id || "", model_id: sel.model_id || "" };
+    MODEL_UI.loaded = true;
+    const st = paintModelCard();
+    if (!st.total){
+      modelHint("服务端还没有任何供应商 —— 去 Zeabur 填 PROVIDER_* 环境变量后重启", "bad");
+    }else if (!st.usable){
+      modelHint("有供应商，但都没配齐（缺密钥或地址）→ 现在选哪个都不会生效", "bad");
+    }else if (!st.activeModel){
+      modelHint("这家还没有模型清单（服务端缺 PROVIDER_" + String(st.activeProv).toUpperCase() + "_MODELS）", "bad");
+    }else{
+      modelHint("已选 " + st.activeProv + " / " + st.activeModel, "good");
+    }
+    await syncParamControls();
+  }catch(e){
+    MODEL_UI.loaded = false;
+    paintButtons(modelProvSeg, [], "");
+    paintButtons(modelSeg, [], "");
+    modelHint("读不到允许列表（" + ((e && e.message) || "网络错误") + "）", "bad");
+  }finally{
+    MODEL_UI.busy = false;
+  }
+}
+
+/* effort / 上下文阈值：**界面跟着库走**。每次打开设置页对齐一次，防止
+   本地存的旧值和库里的真值不一致（比如换台设备）。 */
+function contextKeepValue(){
+  const v = contextSlider ? Number(contextSlider.value) : 40;
+  const pct = Math.max(0, Math.min(100, isFinite(v) ? v : 40));
+  return Math.round((pct / 100) * CONTEXT_MAX_TOKENS);
+}
+function paintContextLabel(){
+  if (!contextKeepLabel) return;
+  contextKeepLabel.textContent = "保留" + formatK(contextKeepValue());
+}
+async function syncParamControls(){
+  let s = {};
+  try{ s = await apiModelGet("/app/ext/settings"); }catch(_){ return; }
+  if (effortSeg && s.effort){
+    Array.prototype.slice.call(effortSeg.querySelectorAll("button"))
+      .forEach((b) => b.classList.toggle("active", b.dataset.val === s.effort));
+  }
+  if (effortHintEl) effortHintEl.textContent = s.effort ? ("已存 " + s.effort) : "";
+  if (contextSlider && s.context_keep != null){
+    const pct = Math.round((Number(s.context_keep) / CONTEXT_MAX_TOKENS) * 100);
+    contextSlider.value = String(Math.max(0, Math.min(100, isFinite(pct) ? pct : 40)));
+    paintContextLabel();
+  }
+}
+
+/* 供应商：只切界面（换一组模型按钮），**不落库**。
+   理由：此刻若单独存 provider_id，而 model_id 还是上一家的值，服务端那条"宽松校验"
+   会放行（它只在两者都有值时才查对不对）→ 库里会留下一对不匹配的组合。
+   等模型也点了，再一次把两条一起存。 */
+if (modelProvSeg){
+  modelProvSeg.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b || !modelProvSeg.contains(b) || b.disabled) return;
+    MODEL_UI.selected = { provider_id: b.dataset.val, model_id: "" };
+    const st = paintModelCard();
+    modelHint("选了 " + st.activeProv + " · 再点一个模型才存下来", "");
+  });
+}
+/* 模型：真正落库的一步。成功才认，失败回滚。 */
+if (modelSeg){
+  modelSeg.addEventListener("click", async (e) => {
+    const b = e.target.closest("button");
+    if (!b || !modelSeg.contains(b) || b.disabled) return;
+    const pid = MODEL_UI.selected.provider_id || MODEL_UI.defaultProvider || "";
+    const mid = b.dataset.val || "";
+    if (!pid || !mid){ modelHint("还没选供应商", "bad"); return; }
+    const prev = MODEL_UI.selected.model_id;
+    b.classList.add("active");                                   // 乐观：先给手感
+    try{
+      await apiSettingsPut({ provider_id: pid, model_id: mid });
+      MODEL_UI.selected = { provider_id: pid, model_id: mid };
+      const st = paintModelCard();
+      modelHint("已存 " + st.activeProv + " / " + st.activeModel, "good");
+    }catch(err){
+      MODEL_UI.selected = { provider_id: pid, model_id: prev };
+      paintModelCard();
+      modelHint("没存上：" + ((err && err.message) || "未知错误"), "bad");
+    }
+  });
+}
+/* 验证模型名：真发一次最小调用（成本是十几个 token），结果写回 hint。 */
+if (modelProbeRow){
+  modelProbeRow.addEventListener("click", async () => {
+    const pid = MODEL_UI.selected.provider_id || MODEL_UI.defaultProvider || "";
+    const mid = activeSegVal(modelSeg);
+    if (!pid || !mid){ modelHint("先选一个供应商和模型再验证", "bad"); return; }
+    if (modelProbeValue) modelProbeValue.textContent = "探测中…";
+    try{
+      const r = await fetch(`${API_BASE}/app/ext/providers/probe`, {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ provider_id: pid, model: mid }),
+      });
+      let d = {};
+      try{ d = await r.json(); }catch(_){}
+      if (d && d.ok){
+        if (modelProbeValue) modelProbeValue.textContent = "通了 · " + (d.ms || 0) + "ms";
+        modelHint("模型名没问题：" + (d.model || mid) + "（它回了 " + JSON.stringify(String(d.sample || "").slice(0, 32)) + "）", "good");
+        showToast("模型名验证通过");
+      }else{
+        const em = (d && d.error && (d.error.message || d.error.code)) || ("HTTP " + r.status);
+        if (modelProbeValue) modelProbeValue.textContent = "没通";
+        modelHint("探测失败：" + em + (String(em).indexOf("model_not_allowed") >= 0
+          ? " —— 服务端 PROVIDER_…_MODELS 里没有这个名字（要逐字符一致）" : ""), "bad");
+      }
+    }catch(err){
+      if (modelProbeValue) modelProbeValue.textContent = "探测失败";
+      modelHint("探测发不出去：" + ((err && err.message) || "网络错误"), "bad");
+    }
+  });
+}
+
+/* effort：落库（下发上游要服务端配 EFFORT_PARAM，见卡片上的 info）。 */
+wireSegmented(effortSeg, null, async (val) => {
+  try{
+    await apiSettingsPut({ effort: val });
+    if (effortHintEl) effortHintEl.textContent = "已存 " + val;
+  }catch(e){
+    if (effortHintEl) effortHintEl.textContent = "没存上：" + ((e && e.message) || "未知错误");
+    await syncParamControls();                                    // 回滚成库里的值
+  }
+});
+
+/* 上下文阈值：拖动即改标签，停手 700ms 才落库（不然拖一次产生几十个请求）。 */
+let contextSaveTimer = null;
 if (contextSlider){
-  const savedContext = localStorage.getItem("companion_pick_context");
-  if (savedContext !== null && savedContext !== "") contextSlider.value = savedContext;
-  contextSlider.addEventListener("input", () => { try{ localStorage.setItem("companion_pick_context", contextSlider.value); }catch(_){} });
+  const savedCtx = localStorage.getItem("companion_pick_context");
+  if (savedCtx !== null && savedCtx !== "") contextSlider.value = savedCtx;
+  paintContextLabel();
+  contextSlider.addEventListener("input", () => {
+    paintContextLabel();
+    try{ localStorage.setItem("companion_pick_context", contextSlider.value); }catch(_){}
+    clearTimeout(contextSaveTimer);
+    contextSaveTimer = setTimeout(async () => {
+      try{ await apiSettingsPut({ context_keep: contextKeepValue(), context_trigger: CONTEXT_MAX_TOKENS }); }
+      catch(_){ /* 静默：拖动途中报错太吵；下次打开设置页会以库为准回正 */ }
+    }, 700);
+  });
 }
 
 function setBrainUi(target){

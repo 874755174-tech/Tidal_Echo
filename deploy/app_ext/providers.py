@@ -388,6 +388,16 @@ def normalize_request(body: Any) -> dict:
         raise ProviderError("too_large", f"system 超过 {MAX_SYSTEM_CHARS} 字符", 400)
 
     params: dict = {}
+
+    # 🆕 effort（推理强度）：**不是数值**，所以不走下面 `_num` 那套区间校验。
+    #    这里只负责"把它带进内部格式"；翻译成上游的真实字段名是 `adapt()` 的事，
+    #    而且**默认不发** —— 见 `_effort_payload` 上方那段注释（别在这加默认值）。
+    effort = body.get("effort")
+    if effort is not None:
+        if not isinstance(effort, str):
+            raise ProviderError("bad_param", "effort 必须是字符串", 400)
+        params["effort"] = effort
+
     for k in ("temperature", "top_p", "max_tokens"):
         v = body.get(k)
         if v is not None:
@@ -438,6 +448,51 @@ def _merge_same_role(msgs: list) -> list:
 
 
 # ---------------------------------------------------------------------------
+# effort → 上游字段名（🆕 P1 收尾 2026-09-15）
+# ---------------------------------------------------------------------------
+
+def _effort_payload(provider_id: str, effort: str):
+    """把界面上的 effort 档位翻译成上游真正认的一个字段。返回 `(字段名, 值)`。
+
+    🔴 **默认不发**（没配 env 就返回 `(None, None)`）。这个默认值是刻意的：
+       "推理强度"这件事**没有跨供应商统一字段名** ——
+       OpenAI 系叫 `reasoning_effort`，Anthropic 原生是 `thinking`，
+       不少中转站干脆不需要（模型名字里带 `-thinking` 就自己出 CoT），
+       还有些站对**不认识的字段直接 400**。
+       所以默认发一个猜出来的字段名 = 通车当天把自己搞挂。
+       宁可"配了才生效"，也不要"猜错了全线 400"。
+
+    配法（改行为不用改代码，与 `PROVIDER_<UP>_MODELS` 是同一套思路）：
+
+        PROVIDER_RELAY_EFFORT_PARAM=reasoning_effort      ← 要发的字段名
+        PROVIDER_RELAY_EFFORT_MAP={"xhigh":"high"}        ← 可选：档位改名
+
+    · `_PARAM` 留空/不配 → 不下发（默认）
+    · `_MAP` 是 JSON 对象，把我们的档位映到上游认的值；**值可以是字符串，也可以是对象**
+      （例：`{"high":{"type":"enabled","budget_tokens":10000}}` → 直接塞进 body 当嵌套对象）
+    · `_MAP` 写坏了（不是合法 JSON / 不是对象）→ **按原值发**，不让一个可选项
+      把整条请求搞挂（映射表是可选优化，不是必填）
+    """
+    up = (provider_id or "").strip().upper()
+    field = _env(f"PROVIDER_{up}_EFFORT_PARAM")
+    if not field:
+        return None, None
+    lvl = (effort or "").strip()
+    if not lvl:
+        return None, None
+
+    raw = _env(f"PROVIDER_{up}_EFFORT_MAP")
+    if raw:
+        try:
+            m = json.loads(raw)
+            if isinstance(m, dict) and lvl in m:
+                return field, m[lvl]
+        except Exception:
+            pass                      # 见 docstring：写坏了就按原值发
+    return field, lvl
+
+
+# ---------------------------------------------------------------------------
 # 适配层：内部格式 → 各供应商的真实 (url, headers, body)
 # ---------------------------------------------------------------------------
 
@@ -474,6 +529,10 @@ def adapt(provider_id: str, model: str, req: dict) -> tuple:
             body["top_p"] = top_p
         if stop:
             body["stop"] = stop
+        # effort：**只有配了 PROVIDER_<UP>_EFFORT_PARAM 才会出现在这里**
+        ef_field, ef_val = _effort_payload(p["id"], params.get("effort") or "")
+        if ef_field and ef_val is not None:
+            body[ef_field] = ef_val
         return url, headers, body
 
     # ── ② Anthropic 官方：x-api-key 而非 Bearer；system 是顶层字段 ──

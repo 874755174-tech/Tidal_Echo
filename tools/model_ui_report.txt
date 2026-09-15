@@ -1,0 +1,36 @@
+设置页模型/参数前端验收：35/35 通过
+[PASS] 页面已进入「已登录 + 非 mock」状态
+[PASS] 🔴 拉不到允许列表 → 供应商区是空的（不是硬编码假按钮）
+[PASS] 🔴 拉不到允许列表 → 模型区也是空的
+[PASS] 🔴 拉不到允许列表 → 提示里明说「读不到」
+[PASS] 拉不到时提示标成 bad（会被染成警示色）
+[PASS] 🔴 界面里没有任何硬编码的假模型名（Opus 4.7 / Fable 5 这类）
+[PASS] 供应商按钮来自允许列表（2 个）
+[PASS] 选中项落在服务端给的默认供应商（relay）
+[PASS] 🔴 不可用的供应商（没配 key）按钮 disabled
+[PASS] 不可用供应商的 title 说明了原因（还没配密钥）
+[PASS] 模型按钮列出 relay 的 3 个模型（含 thinking 那个）
+[PASS] 模型默认选中 service 给的 default_model
+[PASS] 提示里报了当前选中（provider / model）
+[PASS] 🔴 点「不可用」的供应商按钮无效（disabled 挡住）
+[PASS] 找得到 thinking 那个模型按钮
+[PASS] 🔴 点模型 → 发出了 PUT /app/ext/settings
+[PASS] 🔴 PUT body 同时带 provider_id 与 model_id（成对存，不会留半对）
+[PASS] 🔴 落库成功后界面把新模型标成选中
+[PASS] 🔴 成功后 hint 变成「已存 …」且标成 good
+[PASS] 失败路径确实发了 PUT
+[PASS] 🔴 PUT 400 → 提示里写出服务端给的原因（不是笼统的「失败」）
+[PASS] 🔴 失败后提示标成 bad
+[PASS] 🔴 失败后选中态回滚（仍是上一个成功的 thinking 模型，没留下假的 sonnet 选中）
+[PASS] 🔴 点「验证模型名」→ POST /app/ext/providers/probe
+[PASS] 🔴 探测通过 → hint 说「模型名没问题」
+[PASS] 探测结果写到按钮右侧（通了 · Nms）
+[PASS] 🔴 effort 选中态按库里的值回填（xhigh）
+[PASS] effort 提示写着已存的值
+[PASS] 🔴 上下文滑块按库里的 context_keep 回填（120k → 60%）
+[PASS] 滑块左侧标签跟着算出「保留120k」
+[PASS] 🔴 点 effort → PUT settings 带 effort
+[PASS] 🔴 拖完滑块停手 → PUT settings 带 context_keep=160000
+[PASS] 同时带上了 context_trigger=200000
+[PASS] 🔴 打开设置页 → 自动拉一次允许列表（不用手动刷新）
+[PASS] 打开设置页也拉了一次 settings 对齐 effort/上下文

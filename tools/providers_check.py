@@ -88,6 +88,20 @@ P1 模型网关验收 —— 允许列表 / 三格式适配 / 真 HTTP 通路 / 
   D. 红线
      50. git diff e7c9bf5 -- backend/ examples/ channel/ 为空
 
+  E. 🆕 P1 收尾（2026-09-15）：settings 的参数真的下发 + effort 翻译
+     58. effort 被 normalize 带进内部格式
+     59. 🔴 没配 EFFORT_PARAM → 上游 body 里没有 effort（默认不发，不猜字段名）
+     60. 配了 EFFORT_PARAM → 按配置的字段名发出、值原样
+     61. EFFORT_MAP 生效（xhigh → high）
+     62. EFFORT_MAP 的值可以是嵌套对象（贴 thinking:{...} 那类上游）
+     63. 🔴 EFFORT_MAP 写坏 → 按原值发，不抛错（可选项不该拖垮请求）
+     64. effort 非字符串 → bad_param（干净 400，不是 500）
+     64b. 🔴 EFFORT_VALUES 覆盖设置页全部档位（含 xhigh）
+     65. 🔴 settings 里的参数在 body 没传时被补进请求（原来"存了＝没存"）
+     66. 🔴 body 显式传的优先（temperature=0 不被 settings 顶掉）
+     67. 🔴 effort 能落库（xhigh 合法）但没配 EFFORT_PARAM 时照样不下发
+     68. 🔴 body 不带 model → 用 settings 里选的那个模型
+
 跑法（项目 venv）：
     .venv\\Scripts\\python.exe tools\\providers_check.py
 结果写 tools/providers_report.txt
@@ -575,6 +589,87 @@ def part_a() -> None:
         shutil.rmtree(mig, ignore_errors=True)
 
 
+def part_a2() -> None:
+    """🆕 P1 收尾（2026-09-15）：`effort` → 上游字段。**纯逻辑，直接打 `adapt()`。**
+
+    为什么单独一段而不是塞进 part_a / part_c：
+      · 这一段要**临时配 env**（`PROVIDER_RELAY_EFFORT_PARAM`）来模拟"她那家站认的字段名"，
+        而 part_c 是**起子进程**跑的（env 走显式 dict，改本进程的 os.environ 传不过去）。
+        所以只能用 `P.adapt()` 在进程内断言 —— 它本来就发不出请求，是纯函数。
+      · `try/finally` 复原 env：漏了会把 part_b / part_c 的"上游收到的 body"断言污染掉
+        （part_c 的 65/67 就是断言"没有 effort 字段"，泄露进去必红）。
+
+    设计要点（也是这几条断言的由来）：`effort` **默认不发**。
+    各家站字段名不统一（reasoning_effort / thinking / enable_thinking），
+    往不认识的字段上写有的站直接 400 → 通车当天自己把自己搞挂。
+    "配了才生效"比"猜一个"安全，这就是 58-63 在守的东西。
+    """
+    import app_ext.providers as P
+    from app_ext import identity as I
+
+    req = P.normalize_request({
+        "messages": [{"role": "user", "content": "在吗"}],
+        "effort": "xhigh",
+    })
+    chk("58 effort 被 normalize 带进内部格式（不是被静默丢掉）",
+        req["params"].get("effort") == "xhigh", str(req["params"]))
+
+    try:
+        # ① 不配 → 不发（默认值就是"不猜"）
+        os.environ.pop("PROVIDER_RELAY_EFFORT_PARAM", None)
+        os.environ.pop("PROVIDER_RELAY_EFFORT_MAP", None)
+        _, _, body = P.adapt("relay", MODEL, req)
+        chk("🔴 59 没配 EFFORT_PARAM → 上游 body 里没有 effort（默认不发）",
+            not any(k in body for k in ("effort", "reasoning_effort", "thinking", "enable_thinking")),
+            json.dumps(body, ensure_ascii=False)[:150])
+
+        # ② 配了字段名 → 原值发
+        os.environ["PROVIDER_RELAY_EFFORT_PARAM"] = "reasoning_effort"
+        _, _, body = P.adapt("relay", MODEL, req)
+        chk("60 配了 EFFORT_PARAM → 按配置的字段名发出（值原样）",
+            body.get("reasoning_effort") == "xhigh",
+            json.dumps(body, ensure_ascii=False)[:150])
+
+        # ③ 值映射：界面 5 档、上游只认 3 档时的接法
+        os.environ["PROVIDER_RELAY_EFFORT_MAP"] = '{"xhigh": "high"}'
+        _, _, body = P.adapt("relay", MODEL, req)
+        chk("61 EFFORT_MAP 生效（xhigh → high）",
+            body.get("reasoning_effort") == "high",
+            json.dumps(body, ensure_ascii=False)[:150])
+
+        # ④ 映射的值允许是嵌套对象（贴 thinking:{type,budget_tokens} 这类上游）
+        os.environ["PROVIDER_RELAY_EFFORT_MAP"] = '{"xhigh": {"type": "enabled", "budget_tokens": 10000}}'
+        _, _, body = P.adapt("relay", MODEL, req)
+        chk("62 EFFORT_MAP 的值可以是对象（嵌套字段直接塞进 body）",
+            isinstance(body.get("reasoning_effort"), dict)
+            and body["reasoning_effort"].get("budget_tokens") == 10000,
+            json.dumps(body, ensure_ascii=False)[:150])
+
+        # ⑤ 映射表写坏 → 按原值发（可选项不该拖垮整条请求）
+        os.environ["PROVIDER_RELAY_EFFORT_MAP"] = "{这不是 JSON"
+        _, _, body = P.adapt("relay", MODEL, req)
+        chk("🔴 63 EFFORT_MAP 写坏 → 按原值发，不抛错",
+            body.get("reasoning_effort") == "xhigh",
+            json.dumps(body, ensure_ascii=False)[:150])
+    finally:
+        os.environ.pop("PROVIDER_RELAY_EFFORT_PARAM", None)
+        os.environ.pop("PROVIDER_RELAY_EFFORT_MAP", None)
+
+    # ⑥ 类型错误要报 400，不是 500
+    try:
+        P.normalize_request({"messages": [{"role": "user", "content": "x"}], "effort": 3})
+        chk("64 effort 非字符串 → bad_param", False, "没被挡住")
+    except P.ProviderError as e:
+        chk("64 effort 非字符串 → bad_param（干净 400）", e.code == "bad_param", e.code)
+
+    # ⑦ 档位表必须与设置页画出来的按钮一一对应
+    #    少一档的后果：点了那个按钮 → PUT 400 → 看着像"没保存"，很难查。
+    ui_levels = {"low", "medium", "high", "xhigh", "max"}
+    chk("🔴 64b EFFORT_VALUES 覆盖设置页的全部档位（含 xhigh）",
+        ui_levels.issubset(I.EFFORT_VALUES),
+        f"ui={sorted(ui_levels)} api={sorted(I.EFFORT_VALUES)}")
+
+
 def part_b() -> None:
     """真 HTTP 往返：打本地假上游。"""
     import asyncio
@@ -920,6 +1015,57 @@ def part_c(tmp: Path) -> None:
             and abs((body_received.get("temperature") or 0) - 0.7) < 1e-9,
             f"max_tokens={body_received.get('max_tokens')} temp={body_received.get('temperature')}")
 
+        # ── 65-68) 🆕 P1 收尾：settings 的参数真的下发到上游（2026-09-15）──────
+        #
+        # 为什么这块非验不可：`settings` 表**早就存得下** max_tokens / temperature / effort，
+        # 但网关以前只拿 provider_id / model_id，参数**存了＝没存**。
+        # 前端把按钮做真之后，如果这里还这样，表现就是"设置页看着生效了、实际一个字没变" ——
+        # 属于最难被发现的那类 bug（界面全程诚实，链路中途掉了）。
+        req(base + "/app/ext/settings", method="PUT", token=SECRET,
+            body={"max_tokens": 1234, "temperature": 0.25})
+
+        # 65) body 没传 → 用 settings 的
+        req(base + V1, method="POST", token=SECRET, body={
+            "model": MODEL, "messages": [{"role": "user", "content": "x"}],
+        })
+        rb = seen.get("body") or {}
+        chk("🔴 65 settings 里的参数在 body 没传时被补进请求",
+            rb.get("max_tokens") == 1234 and abs((rb.get("temperature") or 0) - 0.25) < 1e-9,
+            f"max_tokens={rb.get('max_tokens')} temp={rb.get('temperature')}")
+
+        # 66) body 传了 → body 赢（注意 temperature=0 是"真要 0"，不能被顶掉）
+        req(base + V1, method="POST", token=SECRET, body={
+            "model": MODEL, "messages": [{"role": "user", "content": "x"}],
+            "max_tokens": 77, "temperature": 0,
+        })
+        rb = seen.get("body") or {}
+        chk("🔴 66 body 显式传的参数优先于 settings（temperature=0 不被顶掉）",
+            rb.get("max_tokens") == 77 and rb.get("temperature") == 0,
+            f"max_tokens={rb.get('max_tokens')} temp={rb.get('temperature')}")
+
+        # 67) effort 落库（与设置页 5 档对齐）+ 默认不下发
+        st, d = req(base + "/app/ext/settings", method="PUT", token=SECRET, body={"effort": "xhigh"})
+        chk("🔴 67 PUT effort=xhigh → 200 且落库（设置页那一档是合法的）",
+            st == 200 and "effort" in (d.get("changed") or []), f"{st} {str(d)[:120]}")
+        st, d = req(base + "/app/ext/settings", token=SECRET)
+        chk("🔴 67 effort 读得回 xhigh", st == 200 and d.get("effort") == "xhigh", str(d.get("effort")))
+
+        req(base + V1, method="POST", token=SECRET, body={
+            "model": MODEL, "messages": [{"role": "user", "content": "x"}],
+        })
+        rb = seen.get("body") or {}
+        chk("🔴 67 effort 存了但没配 EFFORT_PARAM → 照样不下发（不猜字段名）",
+            not any(k in rb for k in ("effort", "reasoning_effort", "thinking")),
+            json.dumps(rb, ensure_ascii=False)[:150])
+
+        # 68) 身体不传 model 时 → 用 settings 里选的模型（通车后"设置页选了什么就用什么"）
+        req(base + V1, method="POST", token=SECRET, body={
+            "messages": [{"role": "user", "content": "x"}],
+        })
+        rb = seen.get("body") or {}
+        chk("🔴 68 body 不带 model → 用 settings 里选的那个模型",
+            rb.get("model") == MODEL, f"上游收到 model={rb.get('model')!r}")
+
     finally:
         proc.terminate()
         try:
@@ -948,6 +1094,7 @@ def main() -> int:
         chk("假上游已就绪（127.0.0.1:8794）", True, "")
 
         part_a()
+        part_a2()      # 🆕 58-64b：effort → 上游字段（纯逻辑，临时配 env 后复原）
         part_b()
         part_c(tmp)
         part_d()

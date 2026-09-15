@@ -81,6 +81,12 @@ SSE_HEADERS = {
 # 因为 `{}`（空对象）是合法 body，不能跟"读不出来"混为一谈。
 _BAD = object()
 
+# 🆕 P1 收尾（⑦ 参数下发）：settings 表里哪些字段要"补进请求"。
+#   名单是**白名单式**的 —— 新加字段必须显式列进来，防止某天 settings 多一列就
+#   悄悄开始影响上游请求（那是排查起来最费劲的一类 bug）。
+#   对应身份层的 `identity.WRITABLE_FIELDS`；那边管"能不能存"，这里管"发不发"。
+_PARAM_KEYS = ("max_tokens", "temperature", "top_p", "effort")
+
 
 def _err(e, default_status: int = 400):
     if hasattr(e, "as_dict"):
@@ -122,10 +128,29 @@ def install(relay, public_prefix: str = "/") -> None:
     base = "/app/ext"
 
     def _pick(body: dict) -> tuple:
-        """决定这次用哪个供应商/模型：请求体 → settings → 默认。"""
+        """决定这次用哪个供应商/模型，并**就地**把 settings 里的参数补进 body。
+
+        优先级：**请求体显式传的 > settings 表里的 > 什么都不传（网关用自己的默认）**。
+
+        🔴 为什么"就地改 body"而不是返回一个新 dict（2026-09-15）：
+           两个调用点（`_do_complete` / `_do_chat`）拿到的 body 本来就是同一个对象，
+           而它们紧接着就把它交给 `normalize_request`。就地补字段 → **调用点一行不用改**，
+           也就没有"改了这儿忘了那儿"的机会。副作用是明确的、唯一的，写在这里备案。
+           注意：只补 `None`，**不覆盖**调用方给的值 —— body 里显式传 `temperature: 0`
+           是"真的要 0"，不能被 settings 顶掉。
+
+        ⚠️ `context_keep` / `context_trigger` **不在这里下发**：
+           它们管的是"发多少历史给模型"，属于上下文管理（P2），网关只负责转发消息，
+           不替调用方裁剪历史（网关猜历史 = 两处都以为对方在管）。
+        """
         s = I.get_settings(relay)
-        pid = (body or {}).get("provider_id") or s.get("provider_id") or None
-        mid = (body or {}).get("model") or s.get("model_id") or None
+        if not isinstance(body, dict):
+            body = {}
+        pid = body.get("provider_id") or s.get("provider_id") or None
+        mid = body.get("model") or s.get("model_id") or None
+        for k in _PARAM_KEYS:
+            if body.get(k) is None and s.get(k) is not None:
+                body[k] = s[k]                 # 见 docstring：只补空，不覆盖
         return pid, mid
 
     # ── 允许列表 ───────────────────────────────────────────────────────────

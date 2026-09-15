@@ -1,5 +1,5 @@
 ==========================================================================
-P1 模型网关验收　117/117 通过
+P1 模型网关验收　131/131 通过
 ==========================================================================
 ✅ 假上游已就绪（127.0.0.1:8794）
 ✅ ① catalog 不含 endpoint（http/https）
@@ -55,6 +55,14 @@ P1 模型网关验收　117/117 通过
 ✅ ㉑b 🔴 迁移不动 messages（1 条老消息还在）
 ✅ ㉑b 🔴 迁移幂等：再跑一次 migrated=[]
 ✅ ㉑b 版本号推到 2
+✅ 58 effort 被 normalize 带进内部格式（不是被静默丢掉）
+✅ 🔴 59 没配 EFFORT_PARAM → 上游 body 里没有 effort（默认不发）
+✅ 60 配了 EFFORT_PARAM → 按配置的字段名发出（值原样）
+✅ 61 EFFORT_MAP 生效（xhigh → high）
+✅ 62 EFFORT_MAP 的值可以是对象（嵌套字段直接塞进 body）
+✅ 🔴 63 EFFORT_MAP 写坏 → 按原值发，不抛错
+✅ 64 effort 非字符串 → bad_param（干净 400）
+✅ 🔴 64b EFFORT_VALUES 覆盖设置页的全部档位（含 xhigh）
 ✅ ㉒ OpenAI 流式：拼接正确
 ✅ ㉒ OpenAI 流式：逐段回调（段数>1）
 ✅ ㉒ OpenAI 流式：usage 被捡到
@@ -117,6 +125,12 @@ P1 模型网关验收　117/117 通过
 ✅ 🔴 57 通车仿真：身体形状的请求能被解析并流出文本
 ✅ 🔴 57 通车仿真：上游收到的 system 在 messages 首位
 ✅ 🔴 57 通车仿真：max_tokens/temperature 没被网关吃掉
+✅ 🔴 65 settings 里的参数在 body 没传时被补进请求
+✅ 🔴 66 body 显式传的参数优先于 settings（temperature=0 不被顶掉）
+✅ 🔴 67 PUT effort=xhigh → 200 且落库（设置页那一档是合法的）
+✅ 🔴 67 effort 读得回 xhigh
+✅ 🔴 67 effort 存了但没配 EFFORT_PARAM → 照样不下发（不猜字段名）
+✅ 🔴 68 body 不带 model → 用 settings 里选的那个模型
 ✅ 🔴 ㊿ 红线：git diff 为空（backend/examples/channel 零改动）
 ==========================================================================
 全部通过 ✅
