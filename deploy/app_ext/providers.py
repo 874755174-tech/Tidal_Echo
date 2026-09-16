@@ -597,19 +597,67 @@ def adapt(provider_id: str, model: str, req: dict) -> tuple:
 # 反向：各供应商的流 / 完整响应 → 归一化文本
 # ---------------------------------------------------------------------------
 
-def parse_stream(provider_id: str, payload: str) -> Optional[str]:
-    """吃一行 SSE 的 `data:` **后面那部分**，吐一段文本增量（没有就 None）。
+# ── 🆕 思考链（CoT）字段别名（2026-09-16）───────────────────────────────
+#
+# 上游把"他想了什么"放在哪个字段，各家中转站叫法不同。实测那台站用的是
+# `reasoning_content`（DeepSeek 系命名，OpenAI 兼容站里最通用的一支）。
+# 这里按已知别名逐个试，认出来就带出去；认不出也不报错 —— 不知道就等于没有。
+_REASONING_KEYS = ("reasoning_content", "reasoning", "thinking", "reasoning_details")
+
+
+def _squeeze(v) -> str:
+    """把可能是 `str` / `list[str]` / `list[dict]` 的东西压成一段文本。
+
+    `reasoning_details` 这类字段在不同站上形状不同（有的是字符串，有的是
+    `[{"text": "…"}]`），所以不能只按字符串处理 —— 那不是"顺手兼容"，
+    而是"少写一个分支就静默丢一段内容"。
+    """
+    if isinstance(v, str):
+        return v
+    if isinstance(v, list):
+        out = []
+        for x in v:
+            if isinstance(x, str):
+                out.append(x)
+            elif isinstance(x, dict):
+                out.append(str(x.get("text") or x.get("content") or ""))
+        return "".join(out)
+    return ""
+
+
+def _reasoning_of(delta) -> str:
+    """从 `delta` / `message` 里掏思考链增量。没有 → 空串。"""
+    if not isinstance(delta, dict):
+        return ""
+    for k in _REASONING_KEYS:
+        if k in delta:
+            s = _squeeze(delta.get(k))
+            if s:
+                return s
+    return ""
+
+
+def parse_stream_parts(provider_id: str, payload: str) -> list:
+    """吃一行 SSE 的 `data:` **后面那部分**，把里面的增量**分类**吐出来。
+
+    返回 `[("reasoning"|"content", 文本), ...]`；这一帧没有可用内容 → `[]`。
+
+    🔴 为什么要"分类"而不是直接返回字符串（2026-09-16 确诊后修）：
+       改之前这里只 `return delta.get("content")`，上游放在 `reasoning_content`
+       里的思考链**被静默丢掉** —— 表现就是"那个站明明能出 CoT，房子里看不到"。
+       分类之后网关才能把它交给 `on_reasoning`，最后进出口帧。
+       （诊断证据见 `CoT显示链路.md`：上游帧里确实有 `delta.reasoning_content`。）
 
     静默忽略认不出的行（`[DONE]` / `ping` / 心跳 / 空行）—— 流里噪音很多，
     逐行报错会让一整条回复因为一个心跳断掉。
     """
     raw = (payload or "").strip()
     if not raw or raw == "[DONE]":
-        return None
+        return []
     try:
         obj = json.loads(raw)
     except Exception:
-        return None
+        return []
     if isinstance(obj, dict) and obj.get("error"):
         raise _stream_error(obj["error"])
     fmt = _BASE_DEFS[provider_id]["format"]
@@ -617,9 +665,16 @@ def parse_stream(provider_id: str, payload: str) -> Optional[str]:
     if fmt == "openai":
         ch = obj.get("choices") or []
         if not ch:
-            return None
+            return []
         delta = ch[0].get("delta") or {}
-        return delta.get("content") or None
+        out = []
+        r = _reasoning_of(delta)
+        if r:
+            out.append(("reasoning", r))
+        c = delta.get("content")
+        if isinstance(c, str) and c:
+            out.append(("content", c))
+        return out
 
     if fmt == "anthropic":
         typ = obj.get("type")
@@ -627,19 +682,46 @@ def parse_stream(provider_id: str, payload: str) -> Optional[str]:
             raise _stream_error(obj.get("error") or obj)
         if typ == "content_block_delta":
             d = obj.get("delta") or {}
+            if d.get("type") == "thinking_delta":
+                # Anthropic 原生把思考链放在 thinking_delta —— 改前这里被丢掉
+                t = d.get("thinking") or d.get("text") or ""
+                return [("reasoning", t)] if t else []
             if d.get("type") in ("text_delta", None):
-                return d.get("text") or None
-        return None
+                t = d.get("text")
+                if isinstance(t, str) and t:
+                    return [("content", t)]
+                r = _reasoning_of(d)      # 有的站借 anthropic 外壳用 openai 字段名
+                return [("reasoning", r)] if r else []
+        return []
 
     if fmt == "gemini":
         cands = obj.get("candidates") or []
         if not cands:
-            return None
+            return []
         parts = ((cands[0].get("content") or {}).get("parts")) or []
-        txt = "".join(str(x.get("text") or "") for x in parts if isinstance(x, dict))
-        return txt or None
+        out = []
+        for x in parts:
+            if not isinstance(x, dict):
+                continue
+            t = str(x.get("text") or "")
+            if not t:
+                continue
+            # Gemini 用 `thought: true` 标出"这段是思考链"
+            out.append(("reasoning" if x.get("thought") else "content", t))
+        return out
 
-    return None
+    return []
+
+
+def parse_stream(provider_id: str, payload: str) -> Optional[str]:
+    """吃一行 SSE 的 `data:` **后面那部分**，吐一段**正文**增量（没有就 None）。
+
+    🔴 这个函数**故意只返回正文**：它是改之前就有的接口，调用方（以及验收里
+       一大票断言）都按"给回一段文本或 None"来用它。要连思考链一起拿，
+       用 `parse_stream_parts()` —— 两个函数共用同一套解析，不会各说各话。
+    """
+    parts = parse_stream_parts(provider_id, payload)
+    return "".join(t for k, t in parts if k == "content") or None
 
 
 def _stream_error(err: Any) -> ProviderError:
@@ -650,33 +732,66 @@ def _stream_error(err: Any) -> ProviderError:
     return ProviderError("upstream_error", msg, 502)
 
 
-def parse_complete(provider_id: str, obj: Any) -> str:
-    """非流式响应 → 归一化文本。"""
+def parse_complete_parts(provider_id: str, obj: Any) -> tuple:
+    """非流式响应 → `(正文, 思考链)`。没有的那部分是空串。
+
+    🔴 与 `parse_stream_parts` 同一个道理：非流式响应里思考链同样走**独立字段**
+       （openai 系是 `message.reasoning_content`，anthropic 是 `type=="thinking"`
+       的内容块，gemini 是 `thought: true` 的 part）。改之前这三处全被丢掉。
+    """
     fmt = _BASE_DEFS[provider_id]["format"]
     if not isinstance(obj, dict):
-        return ""
+        return "", ""
     if obj.get("error"):
         raise _stream_error(obj["error"])
 
     if fmt == "openai":
         ch = obj.get("choices") or []
         if not ch:
-            return ""
-        return ((ch[0].get("message") or {}).get("content")) or ""
+            return "", ""
+        msg = ch[0].get("message") or {}
+        return (msg.get("content") or ""), _reasoning_of(msg)
 
     if fmt == "anthropic":
         blocks = obj.get("content") or []
-        return "".join(str(b.get("text") or "") for b in blocks
-                       if isinstance(b, dict) and b.get("type") == "text")
+        text, think = [], []
+        for b in blocks:
+            if not isinstance(b, dict):
+                continue
+            t = str(b.get("text") or "")
+            if not t:
+                continue
+            if b.get("type") == "thinking":
+                think.append(t)
+            elif b.get("type") == "text":
+                text.append(t)
+        return "".join(text), "".join(think)
 
     if fmt == "gemini":
         cands = obj.get("candidates") or []
         if not cands:
-            return ""
+            return "", ""
         parts = ((cands[0].get("content") or {}).get("parts")) or []
-        return "".join(str(x.get("text") or "") for x in parts if isinstance(x, dict))
+        text, think = [], []
+        for x in parts:
+            if not isinstance(x, dict):
+                continue
+            t = str(x.get("text") or "")
+            if not t:
+                continue
+            (think if x.get("thought") else text).append(t)
+        return "".join(text), "".join(think)
 
-    return ""
+    return "", ""
+
+
+def parse_complete(provider_id: str, obj: Any) -> str:
+    """非流式响应 → 归一化**正文**。
+
+    🔴 同样**故意只返回正文**（改之前的行为，一个字没变）；
+       思考链请用 `parse_complete_parts()`。
+    """
+    return parse_complete_parts(provider_id, obj)[0]
 
 
 def describe_http_error(status: int, body: str) -> str:

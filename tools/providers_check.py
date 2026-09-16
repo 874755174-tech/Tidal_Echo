@@ -238,8 +238,15 @@ class Mock(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         for f in frames:
-            self.wfile.write(f.encode("utf-8"))
-            self.wfile.flush()
+            try:
+                self.wfile.write(f.encode("utf-8"))
+                self.wfile.flush()
+            except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+                # 🔴 客户端提前断开是**预期**行为，不是验收炸了：
+                #    `max_frames=1` 那条断言就是"只读 1 帧就走"，
+                #    以及被取消的流式请求也会这样。旧写法会往 stderr 打一整段
+                #    Traceback（WinError 10053），看着像失败，白吓人一场。
+                return
             time.sleep(0.005)
 
     def do_GET(self):
@@ -980,15 +987,98 @@ def part_c(tmp: Path) -> None:
             and any("reasoning_content" in f for f in (d.get("frames") or [])),
             blob[:240])
 
-        # 71) 🔴 正面对照：同一段上游响应，走老端点 → reasoning 被静默丢掉
-        #     （这一项把"断点①确实存在"从"推理"变成"证据"）
+        # 71) 🔴🔴 CoT 透传：断点①②修好之后的**正面证据**（2026-09-16）
+        #
+        # 改之前这里是**反面**对照 —— 断言"老端点出口帧里没有 reasoning_content"，
+        # 用途是把"断点①存在"从推理变成证据。确诊出路径 A（上游用独立字段
+        # `delta.reasoning_content`）之后把 ①② 修了，这条断言自然翻面。
+        # 现在它守两件更要紧的事：
+        #   ① 修好了，别哪天又被静默丢掉
+        #   ② 思考链帧里**不带 `content` 键** —— 下游身体是
+        #      `chunk = delta.get("content") or ""` + `if chunk:`
+        #      （examples/api_loop.py:326，红线目录改不了），
+        #      带了这个键就会把思考链当正文发出去、并永久留在库里。
         st2, lines2 = req_sse(base + "/app/ext/llm/chat", token=SECRET, body={
             "provider_id": "relay", "model": MODEL,
             "messages": [{"role": "user", "content": "RAW-A 在吗"}], "stream": True,
         })
-        old_blob = "\n".join(lines2)
-        chk("🔴 71 对照：老端点出口帧里没有 reasoning_content（复现断点①）",
-            st2 == 200 and "reasoning_content" not in old_blob, old_blob[:200])
+        frames2 = []
+        for l in lines2:
+            if not l.startswith("data:"):
+                continue
+            p = l[5:].strip()
+            if p == "[DONE]":
+                continue
+            try:
+                frames2.append(json.loads(p))
+            except Exception:
+                pass
+        think_fr = [o for o in frames2
+                    if ((o.get("choices") or [{}])[0].get("delta") or {}).get("reasoning_content")]
+        body_txt = "".join(((o.get("choices") or [{}])[0].get("delta") or {}).get("content") or ""
+                           for o in frames2)
+        chk("🔴 71 断点①已修：出口帧里**有** reasoning_content（不再静默丢掉）",
+            st2 == 200 and len(think_fr) >= 1, "\n".join(lines2)[:220])
+        chk("🔴 71 思考链帧里**不带** content 键（下游身体靠这个跳过它）",
+            bool(think_fr) and all("content" not in (o["choices"][0]["delta"]) for o in think_fr),
+            json.dumps(think_fr[:2], ensure_ascii=False)[:220])
+        chk("🔴 71 思考链拼起来 = 上游原话，且一个字都没混进正文",
+            "".join(o["choices"][0]["delta"]["reasoning_content"] for o in think_fr) == "我先想个两秒"
+            and "我先想个两秒" not in body_txt
+            and body_txt == f"[{MODEL}] {MOCK_TEXT}",
+            f"body={body_txt!r}")
+        chk("🔴 71 思考链帧**排在**正文帧之前（保序 = 上游怎么发我们就怎么放）",
+            bool(think_fr) and bool(frames2)
+            and frames2.index(think_fr[0]) < next(
+                i for i, o in enumerate(frames2)
+                if ((o.get("choices") or [{}])[0].get("delta") or {}).get("content")),
+            f"think@{frames2.index(think_fr[0])} first-content@"
+            + str(next((i for i, o in enumerate(frames2)
+                        if ((o.get("choices") or [{}])[0].get("delta") or {}).get("content")), -1)))
+
+        # 71b) 🔴 对照：**没有思考链**的普通请求 → 出口帧形状与改动前逐字节相同
+        #      （证明"只在有 CoT 时才加字段"，不会污染所有响应）
+        st3, lines3 = req_sse(base + "/app/ext/llm/chat", token=SECRET, body={
+            "provider_id": "relay", "model": MODEL,
+            "messages": [{"role": "user", "content": "在吗"}], "stream": True,
+        })
+        chk("🔴 71b 对照：普通请求出口帧里**没有** reasoning_content（形状不变）",
+            st3 == 200 and "reasoning_content" not in "\n".join(lines3),
+            "\n".join(lines3)[:200])
+
+        # 71c) 🔴🔴 模拟身体消费这一路：照抄 examples/api_loop.py:325-329 的写法
+        #      （chunk = delta.get("content") or ""；if chunk: 收下）
+        #      → 收下来的必须**正好是正文**，一字节不多一字节不少。
+        #      这是"网关加了字段会不会把身体搞挂"的最终裁决。
+        body_seen = ""
+        for o in frames2:
+            d_ = ((o.get("choices") or [{}])[0].get("delta") or {})
+            c_ = d_.get("content") or ""
+            if c_:
+                body_seen += c_
+        chk("🔴 71c 通车仿真：按身体的方式消费出口帧 → 拿到的正好是正文",
+            body_seen == f"[{MODEL}] {MOCK_TEXT}", repr(body_seen))
+
+        # 71d) 非流式也要把思考链带出来（上游有的站只在非流式给）
+        st4, d4 = req(base + "/app/ext/llm/complete", method="POST", token=SECRET, body={
+            "provider_id": "relay", "model": MODEL,
+            "messages": [{"role": "user", "content": "RAW-A 在吗"}],
+        })
+        msg4 = ((d4.get("choices") or [{}])[0].get("message") or {}) if isinstance(d4, dict) else {}
+        chk("🔴 71d 非流式：message.reasoning_content 也带出来了",
+            st4 == 200 and msg4.get("reasoning_content") == "我先想个两秒",
+            json.dumps(d4, ensure_ascii=False)[:220])
+        chk("🔴 71d 非流式：message.content 仍是纯正文",
+            msg4.get("content") == f"[{MODEL}] {MOCK_TEXT}", repr(msg4.get("content")))
+
+        # 71e) 非流式对照：没 CoT 的请求 → message 里没有 reasoning_content 键
+        st5, d5 = req(base + "/app/ext/llm/complete", method="POST", token=SECRET, body={
+            "provider_id": "relay", "model": MODEL,
+            "messages": [{"role": "user", "content": "在吗"}],
+        })
+        msg5 = ((d5.get("choices") or [{}])[0].get("message") or {}) if isinstance(d5, dict) else {}
+        chk("🔴 71e 对照：非流式无 CoT 时 message 里没有 reasoning_content 键",
+            st5 == 200 and "reasoning_content" not in msg5, json.dumps(msg5, ensure_ascii=False)[:180])
 
         # 72) 路径 B：CoT 内联在正文里 → raw 要分得清（是 B，不是 A）
         st, d = req(base + RAW, method="POST", token=SECRET, body={
@@ -1211,6 +1301,93 @@ def part_d() -> None:
     chk("🔴 ㊿ 红线：git diff 为空（backend/examples/channel 零改动）", out == "", out[:200])
 
 
+def part_e() -> None:
+    """🆕 思考链（CoT）透传的**纯逻辑**验收（2026-09-16）。
+
+    为什么单开一段：上面 71 那一组是"打真端点"验的，跑得慢、依赖 uvicorn 起来。
+    帧形状与解析分类这两件事**根本不需要网络** —— 直接调纯函数就能钉死，
+    而且以后改 `_chunk` / 解析器时这几条会第一时间红。
+
+    这段守的底线只有一句：**没有思考链时，出口形状与改动前逐字节相同。**
+    """
+    import app_ext.llm_gateway as G
+    from app_ext.llm_routes import _chunk as CH
+
+    def delta_of(s: str) -> dict:
+        o = json.loads(s[len("data: "):].strip())
+        return (o.get("choices") or [{}])[0].get("delta")
+
+    # ① 帧形状：有/没有思考链时分别长什么样
+    d = delta_of(CH("r1", "m", 0, text="正文"))
+    chk("🔴 76a _chunk 只给 text → delta 只有 content（与改前相同）",
+        d == {"content": "正文"}, json.dumps(d, ensure_ascii=False))
+
+    d = delta_of(CH("r1", "m", 0, reasoning="想过"))
+    chk("🔴 76b _chunk 只给 reasoning → delta 只有 reasoning_content、**没有 content 键**",
+        d == {"reasoning_content": "想过"} and "content" not in d,
+        json.dumps(d, ensure_ascii=False))
+
+    d = delta_of(CH("r1", "m", 0, finish="stop"))
+    chk("🔴 76c _chunk 什么都不给（结束帧）→ delta 仍是空对象",
+        d == {} and "reasoning_content" not in d, json.dumps(d, ensure_ascii=False))
+
+    s = CH("r1", "m", 0, reasoning="想", text="说")
+    d = delta_of(s)
+    chk("🔴 76d reasoning 与 content 同帧时，reasoning_content 排在前面",
+        list(d.keys()) == ["reasoning_content", "content"], str(list(d.keys())))
+
+    # ② 解析分类（三种格式）
+    import app_ext.providers as P
+    ck = lambda o: json.dumps(o, ensure_ascii=False)  # noqa: E731
+
+    chk("🔴 76e openai：delta.reasoning_content 被分类成 reasoning",
+        P.parse_stream_parts("relay", ck({"choices": [{"delta": {"reasoning_content": "嗯"}}]}))
+        == [("reasoning", "嗯")], "")
+    chk("🔴 76f openai：一帧两字段 → 两条都出，且 reasoning 在前",
+        P.parse_stream_parts("relay", ck({"choices": [{"delta": {
+            "reasoning_content": "R", "content": "C"}}]})) == [("reasoning", "R"), ("content", "C")], "")
+    chk("🔴 76g anthropic：thinking_delta 被分类成 reasoning（改前是丢掉）",
+        P.parse_stream_parts("anthropic", ck({"type": "content_block_delta", "delta": {
+            "type": "thinking_delta", "thinking": "深"}})) == [("reasoning", "深")], "")
+    chk("🔴 76h gemini：thought=true 的 part 被分类成 reasoning",
+        P.parse_stream_parts("gemini", ck({"candidates": [{"content": {"parts": [
+            {"text": "内", "thought": True}]}}]})) == [("reasoning", "内")], "")
+    chk("🔴 76i reasoning 别名（reasoning / thinking / reasoning_details）都认",
+        P.parse_stream_parts("relay", ck({"choices": [{"delta": {"reasoning": "a"}}]}))
+        == [("reasoning", "a")]
+        and P.parse_stream_parts("relay", ck({"choices": [{"delta": {"thinking": "b"}}]}))
+        == [("reasoning", "b")]
+        and P.parse_stream_parts("relay", ck({"choices": [{"delta": {
+            "reasoning_details": [{"text": "c"}]}}]})) == [("reasoning", "c")], "")
+
+    # ③ 🔴 兼容性底线：老接口行为一个字没变
+    chk("🔴 76j parse_stream 遇到 reasoning 帧仍返回 None（与改前一致）",
+        P.parse_stream("relay", ck({"choices": [{"delta": {"reasoning_content": "嗯"}}]})) is None, "")
+    chk("🔴 76k parse_stream 一帧两字段时只回正文（不把 CoT 混进正文）",
+        P.parse_stream("relay", ck({"choices": [{"delta": {
+            "reasoning_content": "R", "content": "C"}}]})) == "C", "")
+    chk("🔴 76l parse_complete 仍只回正文（不含思考链）",
+        P.parse_complete("relay", {"choices": [{"message": {
+            "content": "答", "reasoning_content": "想过"}}]}) == "答", "")
+
+    # ④ 开关可逆
+    old = os.environ.get("LLM_EXPOSE_REASONING")
+    try:
+        os.environ["LLM_EXPOSE_REASONING"] = "0"
+        off = G.expose_reasoning()
+        os.environ["LLM_EXPOSE_REASONING"] = "1"
+        on = G.expose_reasoning()
+        os.environ.pop("LLM_EXPOSE_REASONING", None)
+        default = G.expose_reasoning()
+    finally:
+        if old is None:
+            os.environ.pop("LLM_EXPOSE_REASONING", None)
+        else:
+            os.environ["LLM_EXPOSE_REASONING"] = old
+    chk("🔴 76m LLM_EXPOSE_REASONING：0=关 / 1=开 / 不配=默认开（可逆）",
+        off is False and on is True and default is True, f"{off} {on} {default}")
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="kaelhome_providers_"))
     srv = start_mock()
@@ -1225,6 +1402,7 @@ def main() -> int:
         part_b()
         part_c(tmp)
         part_d()
+        part_e()       # 🆕 76：思考链透传（纯逻辑：帧形状 / 分类 / 开关 / 兼容性）
     finally:
         srv.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)

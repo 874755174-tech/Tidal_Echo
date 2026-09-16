@@ -111,13 +111,30 @@ async def _read_json(request) -> dict:
     return body if isinstance(body, dict) else {}
 
 
-def _chunk(rid: str, model: str, created: int, text=None, finish=None, usage=None) -> str:
-    """拼一个 OpenAI 形状的 SSE 帧。"""
+def _chunk(rid: str, model: str, created: int, text=None, finish=None, usage=None,
+           reasoning=None) -> str:
+    """拼一个 OpenAI 形状的 SSE 帧。
+
+    🆕 2026-09-16：多了 `reasoning` —— 思考链走 `delta.reasoning_content`
+    （DeepSeek 系命名，OpenAI 兼容站里最通用的一支；也正是我们上游回来的那个名字）。
+    改之前这里只有 `content` 一个字段，网关就算接住了思考链也没地方放 —— 断点②。
+
+    🔴 两条纪律，都是为了"别把下游搞挂"：
+      · 思考链帧里**不放 `content` 键**。下游身体是
+        `chunk = delta.get("content") or ""` 然后 `if chunk:`
+        （`examples/api_loop.py:326`，红线目录改不了）→ 它看到思考链帧
+        拿到空串、直接跳过，**既不截断回复也不崩**；验收里有专门一条模拟它消费。
+      · 没有思考链时**一个字段都不加** → 出口帧形状与改动前**逐字节相同**，
+        老客户端和老断言一律不受影响。
+    """
+    delta = {}
+    if reasoning is not None:
+        delta["reasoning_content"] = reasoning
+    if text is not None:
+        delta["content"] = text
     obj = {
         "id": rid, "object": "chat.completion.chunk", "created": created, "model": model,
-        "choices": [{"index": 0,
-                     "delta": ({"content": text} if text is not None else {}),
-                     "finish_reason": finish}],
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
     }
     if usage:
         obj["usage"] = usage
@@ -233,14 +250,17 @@ def install(relay, public_prefix: str = "/") -> None:
             out = await G.complete(pid, mid, req)
         except (P.ProviderError, G.GatewayError) as e:
             return _err(e)
+        msg = {"role": "assistant", "content": out["text"]}
+        # 🆕 思考链同样只"有才加" —— 没配思考的模型，响应形状逐字节不变
+        if G.expose_reasoning() and out.get("reasoning"):
+            msg["reasoning_content"] = out["reasoning"]
         return JSONResponse({
             "id": "chatcmpl-" + uuid.uuid4().hex[:24],
             "object": "chat.completion",
             "created": int(time.time()),
             "model": out["model"],
             "provider_id": out["provider_id"],
-            "choices": [{"index": 0, "finish_reason": "stop",
-                         "message": {"role": "assistant", "content": out["text"]}}],
+            "choices": [{"index": 0, "finish_reason": "stop", "message": msg}],
             "usage": out["usage"],
             "ms": out["ms"],
         })
@@ -259,11 +279,16 @@ def install(relay, public_prefix: str = "/") -> None:
         rid = "chatcmpl-" + uuid.uuid4().hex[:24]
         created = int(time.time())
         q: asyncio.Queue = asyncio.Queue()
+        # 🆕 出口要不要带思考链（默认带；`LLM_EXPOSE_REASONING=0` 可退回旧形状）。
+        #    注意：**开关只管出口，不管解析** —— 思考链照样被接住，
+        #    只是不发进流里。这样"关掉"= 完全回到改动前的行为，可逆。
+        show_think = G.expose_reasoning()
 
         async def _producer():
             try:
                 res = await G.stream_chat(p["id"], mdl, req,
-                                          on_text=lambda t: q.put(("d", t)))
+                                          on_text=lambda t: q.put(("d", t)),
+                                          on_reasoning=lambda t: q.put(("r", t)))
                 await q.put(("end", res))
             except asyncio.CancelledError:
                 raise
@@ -277,6 +302,11 @@ def install(relay, public_prefix: str = "/") -> None:
                     kind, val = await q.get()
                     if kind == "d":
                         yield _chunk(rid, mdl, created, text=val)
+                    elif kind == "r":
+                        # 思考链单独成帧（delta 里只有 reasoning_content）。
+                        # 顺序天然保序：跟正文走同一个队列，上游怎么发我们就怎么放。
+                        if show_think:
+                            yield _chunk(rid, mdl, created, reasoning=val)
                     elif kind == "end":
                         yield _chunk(rid, mdl, created, finish="stop",
                                      usage=val.get("usage") or None)

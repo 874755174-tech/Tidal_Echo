@@ -226,7 +226,7 @@ CORSMiddleware
 | `app_ext/providers.py` | 供应商允许列表 + 三格式适配（openai / anthropic / gemini）+ 流解析。**纯逻辑，不发请求** → 可离线单测 |
 | `app_ext/llm_gateway.py` | 真发 HTTP、收 SSE（`httpx`，`trust_env=False`） |
 | `app_ext/llm_routes.py` | `/app/ext/providers` 与 `/app/ext/llm/*`（含 🆕 **OpenAI 路径别名**，见下节） |
-| `tools/providers_check.py` | 验收 **145** 项（纯逻辑 + 真 HTTP 往返 + 端点 + **通车仿真** + **参数下发/effort** + 红线） |
+| `tools/providers_check.py` | 验收 **166** 项（纯逻辑 + 真 HTTP 往返 + 端点 + **通车仿真** + **参数下发/effort** + **CoT 透传** + 红线） |
 
 **三条铁律**（对应 `架构与产品路线规划.md` §4.1）：
 
@@ -351,12 +351,26 @@ CORSMiddleware
 > （`low/medium/high/max`），而设置页画的是 **5 档**（多一个 `xhigh`）→
 > 点 `xhigh` 会 `PUT 400`，看着像"没保存"。已补上，并加了一条断言守着（64b）。
 
-> 🔍 **CoT（思考链）显示 —— 确诊工具已就位**（2026-09-15）：
-> Lily 2026-09-15 问"站的 opus4.6thinking 稳定出思考链，为什么 kaelhome 看不到"。
-> 诊断结论：前端 thinking 气泡本来就有、`thinking_delta` 通道也现成，
-> **缺的是往那条管道灌 CoT 的水管**，且卡口在身体（红线目录改不了）→ 天然属于 P3。
-> 已落地**第 1 步（丙）**：只读诊断端点 `POST /app/ext/providers/raw`（真发一次最小调用、回上游原话、自动判路径 A/B/C）。
-> 完整诊断见 **`CoT显示链路.md`**（四个断点、两条独立失效路径、三条路线）。
+> 🔍 **CoT（思考链）—— 已确诊 = 路径 A，网关断点①②已修**（2026-09-15 确诊 · 2026-09-16 修完）：
+> Lily 问"站的 opus4.6thinking 稳定出思考链，为什么 kaelhome 看不到"。
+> **诊断结论**：前端 thinking 气泡本来就有、`thinking_delta` 通道也现成；
+> 上游确实把 CoT 放在**独立字段** `delta.reasoning_content` 里（原始帧证据见 `CoT显示链路.md` §0），
+> 是我们网关解析时**只取 `content`、把它静默丢掉了** → 判定 `path = A`。
+>
+> **已修的（①②，都在房子里，可离线验收）**：
+> · `providers.parse_stream_parts()` 按 reasoning / content 分流（三种格式都覆盖）
+> · `llm_routes._chunk()` 让思考链走 `delta.reasoning_content`，
+>   **且该帧不带 `content` 键** —— 下游身体是 `delta.get("content") or ""` + `if chunk:`，
+>   所以它看到思考链帧会当成空串跳过，**不截断、不崩**（验收 71c 专门模拟它消费）。
+> · 老接口 `parse_stream()` / `parse_complete()` **行为一个字没变**；没有 CoT 的响应
+>   出口形状**逐字节相同**。想退回旧形状：Zeabur 配 `LLM_EXPOSE_REASONING=0`（可逆，不用改代码）。
+>
+> **还没修的（③）**：身体（`examples/api_loop.py`，红线目录）只认 `content`、
+> 只发 `reply_delta` → **在网页上仍看不到 CoT**，这一跳留给 P3 换身体时一并做。
+> 但**"上游给了什么"现在就能自己验**：打 `/app/ext/llm/chat` 看有没有
+> `reasoning_content` 帧（命令见 `CoT显示链路.md` §6）。
+>
+> 完整诊断见 **`CoT显示链路.md`**（断点表、两条独立失效路径、改动清单、回退办法）。
 
 ## `web/index.html`：8 处家装 + 1 处 bug 修复（**唯一被动过的原生文件**）
 
@@ -399,7 +413,7 @@ CORSMiddleware
 - `tools/sessions_manage_check.py` — 会话归档/删除/改名 后端（40 项）
 - `tools/session_ui_check.mjs` — 会话归档/删除/改名 前端（40 项，jsdom 真跑 `index.html`）
 - `tools/app_ext_check.py` — **P0 地基验收（55 项：库层 + HTTP 层 + 红线）**
-- `tools/providers_check.py` — **P1 模型网关验收（145 项：纯逻辑 + 真 HTTP + 端点 + OpenAI 路径别名 + 通车仿真 + 参数下发/effort + 红线；自带本地假上游，不需要真 key）**
+- `tools/providers_check.py` — **P1 模型网关验收（166 项：纯逻辑 + 真 HTTP + 端点 + OpenAI 路径别名 + 通车仿真 + 参数下发/effort + CoT 透传 + 红线；自带本地假上游，不需要真 key）**
 - `tools/model_ui_check.mjs` — 🆕 **设置页模型/参数前端（35 项，jsdom 真跑 `index.html`）**：
   专治"后端接口对、前端逻辑错"这类只有真跑页面才看得见的问题 ——
   假状态、PUT 失败不回滚、以及"拉不到就硬编一个"这三件事各有用例守着

@@ -6,32 +6,60 @@
 > **一句话结论：展示层没缺（thinking 气泡是原版就完整具备的能力）。
 > 缺的是"往那条管道里灌 CoT"的三段水管，而且断点全在房子这一侧、不在前端。**
 >
-> 🆕 **2026-09-15 更新**：**第 1 步（丙）已落地** —— 只读诊断端点
-> `POST /app/ext/providers/raw` 已写好并验收（新增 14 项断言，网关验收 145/145；
-> 含一次**突变测试**验证「路径 A/B 判定」真会红）。**用法见第六节**。
+> 🆕 **2026-09-15**：第 1 步（丙）落地 —— 只读诊断端点 `POST /app/ext/providers/raw`。
+> 🆕🆕 **2026-09-16**：**确诊 = 路径 A，断点 ①② 已修好并通过验收**（166/166，含突变测试）。
+> 剩下 ③ 留给 P3（换身体时一并做）。
 
 ---
 
-## 一、先把链路摊开（四层，逐层核对源码）
+## 〇、确诊结论（2026-09-16，证据在手）
+
+`POST /app/ext/providers/raw` 对那台站的 `claude-opus-4-6-thinking` 打了一发，
+拿回来的**原始帧**长这样（截取）：
+
+    data: {"choices":[{"delta":{"content":"","role":"assistant"}}], ...}
+    data: {"choices":[{"delta":{"reasoning_content":"The use"}}], ...}   ← 🔴 CoT 在这
+    data: {"choices":[{"delta":{"reasoning_content":"r is spea"}}], ...}
+    data: {"choices":[{"delta":{"reasoning_content":"king Ch"}}], ...}
+    data: {"choices":[{"delta":{"reasoning_content":"inese"}}], ...}
+    ...
+    data: {"choices":[{"delta":{"content":"在"}}], ...}                  ← 正文才开始
+    data: {"choices":[{"delta":{"content":"的"}}], ...}
+    ...
+    data: {"choices":[],"usage":{...}}
+    data: [DONE]
+
+拼起来是 `The user is speaking Chinese, asking "Are you there?" - a casual greeting.`
+
+**判定 `hints.path = "A"`** —— 上游**给了**独立思考链字段（`delta.reasoning_content`，
+DeepSeek 系命名），是我们网关解析时**只取 `content`、把它静默丢了**。
+
+结论：不是"那台站不出 CoT"，也不是"前端没做展示"，就是**中间两段水管没接**。
+
+---
+
+## 一、先把链路摊开（五层，逐层核对源码）
 
 ```
-上游站（你的中转站）
+上游站（中转站）
   │  SSE 帧：{"choices":[{"delta":{"reasoning_content":"…", "content":"…"}}]}
-  │  ⚠️ CoT 走的是**独立字段**（各家叫法不同：reasoning_content / reasoning / thinking）
+  │  ✅ 实测就是这么发的（字段名 reasoning_content；各家还可能是 reasoning / thinking）
   ▼
-① 房子网关 · 流解析          deploy/app_ext/providers.py:558-563
-  │    delta = ch[0].get("delta") or {}
-  │    return delta.get("content") or None          ← ❌ 断点①
-  │  （anthropic 分支同理：providers.py:569-573 只吃 content_block_delta 的
-  │    text_delta，thinking_delta 那类被 return None 静默丢掉）
+① 房子网关 · 流解析          deploy/app_ext/providers.py  parse_stream_parts()
+  │    ✅ 已修（2026-09-16）：按"这是正文还是思考链"分流
+  │       openai   → delta.reasoning_content / reasoning / thinking / reasoning_details
+  │       anthropic→ delta.type == "thinking_delta"
+  │       gemini   → parts[].thought == true
+  │    老接口 parse_stream() 保留原行为（只回正文），一大票老断言不受影响
   ▼
-② 房子网关 · 出口帧           deploy/app_ext/llm_routes.py:108-118
-  │    _chunk() 只拼 {"choices":[{"delta":{"content": text}}]}
-  │                                       ← ❌ 断点②：帧里**没有**承载 CoT 的字段
+② 房子网关 · 出口帧           deploy/app_ext/llm_routes.py  _chunk()
+  │    ✅ 已修（2026-09-16）：思考链走 `delta.reasoning_content`，
+  │       **且该帧不带 `content` 键**（下游身体靠这个跳过它）；
+  │       没有 CoT 时一个字段都不加 → 形状与改前逐字节相同
   ▼
 ③ 身体（临时人偶）            examples/api_loop.py:325-327 / 364 / 403
   │    chunk = delta.get("content") or ""
-  │    并且只往 /channel/out 发 {"type": "reply_delta"}   ← ❌ 断点③
+  │    并且只往 /channel/out 发 {"type": "reply_delta"}   ← ❌ 断点③（仍存在）
   │    **从不发 {"type": "thinking_delta"}**
   ▼
 ④ 房子后端                   backend/app.py:665 → handle_stream_delta()
@@ -46,28 +74,28 @@
         会主动剥掉正文里的 <thinking>…</thinking> —— 见下面断点④
 ```
 
-**核对结果**：④⑤ 两层全都现成。所以答案不是"kaelhome 没做展示"，
-而是**⑤ 在等 ③ 的数据，③ 在等 ①② 的数据，①② 从来没把上游的 CoT 接住过。**
+**核对结果**：④⑤ 两层全都现成；①②**已补齐**；只剩 ③。
 
 ---
 
 ## 二、四个断点，各自的"能不能改"
 
-| # | 位置 | 现状 | 能不能改 |
+| # | 位置 | 现在的状态 | 能不能改 |
 |---|---|---|---|
-| ① | `providers.parse_stream` | 只取 `delta.content`，`reasoning_content` 静默丢弃 | ✅ 能 —— `deploy/app_ext/` 是我们自己的层 |
-| ② | `llm_routes._chunk` | 出口帧只有 `content` 字段 | ✅ 能 —— 同上 |
-| ③ | `examples/api_loop.py` | 只认 `content`、只发 `reply_delta` | 🔴 **改不了** —— 在**红线目录**（`git diff e7c9bf5 -- examples/` 必须为空） |
-| ④ | `web/index.html` `stripInlineThinkingText` | 把内联的 `<thinking>` 当垃圾剥掉**丢弃** | ✅ 能 —— 前端是本项目**唯一获批的例外** |
+| ① | `providers.parse_stream_parts` | ✅ **已修（09-16）** 按 reasoning / content 分流；老 `parse_stream` 行为不变 | ✅ 已改 —— `deploy/app_ext/` 是我们自己的层 |
+| ② | `llm_routes._chunk` | ✅ **已修（09-16）** 思考链走 `delta.reasoning_content`（无 CoT 时不加字段） | ✅ 已改 —— 同上 |
+| ③ | `examples/api_loop.py` | ❌ **仍是卡口**：只认 `content`、只发 `reply_delta` | 🔴 **改不了** —— 在**红线目录**（`git diff e7c9bf5 -- examples/` 必须为空） |
+| ④ | `web/index.html` `stripInlineThinkingText` | 把内联的 `<thinking>` 当垃圾剥掉**丢弃** | ✅ 能 —— 前端是本项目**唯一获批的例外**（只在走路径 B 时才需要动） |
 
-### 🔴 断点③是这件事的真正卡口
+### 🔴 断点③是剩下的唯一卡口
 
 身体在红线目录里改不了，**而 CoT 要到前端必须经过身体**：
 
-    上游 CoT → 网关 → **身体** → POST /channel/out → 落库 + 广播 → 前端
+    上游 CoT → 网关(①②✅) → **身体(③❌)** → POST /channel/out → 落库 + 广播 → 前端(④⑤✅)
 
-网关和前端都会走，**中间那一跳绕不过去**。所以在"临时人偶"这套架构下，
-**CoT 没法干净地显示出来** —— 这不是没做，是**结构性做不到**。
+网关和前端都会走，**中间那一跳绕不过去**。所以**当下**在网页上看不到 CoT ——
+但**不是白做**：①② 一修，"上游给了什么"已经能拿出来了（见第六节，现在就能自己验），
+等 P3 换身体时只需在**我们自己的代码里**发一条 `thinking_delta` 就全通。
 
 再顺手排除一个看着像捷径的做法（记下来，免得以后有人试）：
 
@@ -79,118 +107,113 @@
 
 ---
 
-## 三、另一个"看到了也白看"的坑：内联 thinking（断点④）
+## 三、另一条独立失效路径：内联 thinking（断点④）
 
-还有一种可能：**上游把思考链内联在 `content` 里**（`<thinking>…</thinking>` 包着），
-而不是放在 `reasoning_content` 里。
+如果哪天换的站**把思考链内联在 `content` 里**（`<thinking>…</thinking>` 包着），
+而不是放在 `reasoning_content` 独立字段里：
 
-这种情况**网关会原样透传**（它只取 content，内容里带什么它就发什么），
-身体也会原样转发 —— **看着像"通了"**，但到前端被 `stripInlineThinkingText()`
-**主动剥掉并且丢弃**，于是 Lily 还是看不到。
+    网关会原样透传（它把整段当 content）→ 身体原样转发 → **看着像通了**
+    → 到前端被 stripInlineThinkingText() **主动剥掉并且丢弃** → 还是看不到
 
-这个坑和断点①②③ 是**两条独立的失效路径**，都可能造成"看不到 CoT"：
+这是**与路径 A 完全独立的**另一条失效路径：
 
-    路径 A：上游用独立字段 reasoning_content  → 死在断点①②③
-    路径 B：上游把 CoT 内联在 content 里      → 死在断点④
+    路径 A：上游用独立字段   → 死在断点①②③（①②已修，③待 P3）
+    路径 B：上游内联在正文里 → 死在断点④（要动前端）
 
-🔴 **所以第一件事不是施工，是确诊走的是哪条路。**
+🔴 所以第一步永远是**确诊走哪条路**，不要凭猜施工。诊断端点见第四节。
 
 ---
 
-## 四、确诊办法（✅ 2026-09-15 已落地）
+## 四、确诊办法（✅ 已落地，两条路都验过）
 
-给房子加一个**只读诊断端点** `POST /app/ext/providers/raw`（真发一次最小调用，
-把上游返回的**原始 SSE 帧**原样回前 N 行，不做任何解析）。看三件事：
+给房子加了一个**只读诊断端点** `POST /app/ext/providers/raw`（真发一次最小调用，
+把上游返回的**原始 SSE 帧**原样回前 N 行，不做任何解析）。它回答三件事：
 
 1. 「帧里有没有 `reasoning_content` / `reasoning` / `thinking` 这类**独立字段**」
-   → 有 = 路径 A
-2. 「`content` 里是不是夹着 `<thinking>` 或 `…` 这种内联标记」→ 有 = 路径 B
+   → 有 = 路径 A ← **实测就是这条**
+2. 「`content` 里是不是夹着 `<thinking>` 这种内联标记」→ 有 = 路径 B
 3. 「两样都没有」→ **上游压根没给**，问题在**请求参数**（多半要开
-   `reasoning_effort` / `thinking` 才会出 CoT）→ 先用 P1 收尾新加的
+   `reasoning_effort` / `thinking` 才会出 CoT）→ 先用
    `PROVIDER_RELAY_EFFORT_PARAM` 试一发
 
-> 这一步的价值：先花十分钟看清是"上游没给"还是"我们丢了"，
-> 再决定要不要动身体那一侧。否则容易在错的地方改半天。
+### 🔴 判定带引号是必须的（踩过的坑）
+
+`raw_hints()` 里匹配 `"reasoning_content"` 这类**带引号**的形式 ——
+否则 `<thinking>` 里的裸词 `thinking` 会被误判成路径 A，A/B 就分不开了。
+验收里 72/77/78 三条专门盯这个，突变测试（去掉引号）会红。
 
 ---
 
-## 五、归属哪个阶段 + 三条路线（等 Lily 拍板）
+## 五、归属哪个阶段 + 三条路线（已拍板并执行）
 
-**归属结论**：它不属于 P1、也不属于 P2 的任何一个已列项 —— 它是一个**横跨三层的小专项**，
-且**必然和 P3 绑在一起**（因为卡口在身体）。
-
-| 路线 | 做什么 | 现在能看到 CoT 吗 | 代价 |
+| 路线 | 做什么 | 现在能看到 CoT 吗 | 状态 |
 |---|---|---|---|
-| **甲 · 等 P3（推荐）** | P1 尾巴只做①②（网关接住 reasoning 并放进出口帧的 `reasoning_content`），**不动 ③**；等换 KaelLife 时在**自己的代码里**直接发 `thinking_delta` | 换完身体就能看到 | 要多等一个阶段；但现在看不到是**结构性**的，硬做就得付下面的代价 |
-| **乙 · 内联绕行** | ① 网关把 reasoning **内联**进 `content`（`<thinking>…</thinking>` 前缀）+ ④ 前端把它**剥出来渲染成 thinking 气泡**（而不是丢掉） | ✅ 立刻能看到 | 🔴 **CoT 会跟着 reply 一起进 `messages` 正文并永久留在库里**；也把"thinking 是中间态、不进正文"的设计破了 |
-| **丙 · 只确诊不施工** ✅ **已完成** | 只加第四节那个只读诊断端点，先把"上游到底给不给"钉死 | ❌ 看不到 | 最小改动、零风险；确诊完再选甲或乙 |
+| **甲 · 网关先行** | ① 解析分流 + ② 出口帧带 `reasoning_content`，**不动 ③** | ❌（要等换身体） | ✅ **已完成（09-16）** |
+| **乙 · 内联绕行** | 网关把 reasoning **内联**进 `content` + 前端剥出来渲染 | ✅ 立刻 | ❌ 不做（代价见下） |
+| **丙 · 只确诊** | 只加第四节那个只读端点 | ❌ | ✅ 已完成（09-15） |
 
-**Bunny 的建议：丙 → 甲**。
-先用一个只读端点花十分钟确认上游到底把 CoT 放在哪（这决定后面所有事），
-然后按甲做 P1 尾巴那两处（纯新增、可离线验收），③ 留给 P3 换身体时一次做对。
-**乙不是不能用，但它是"把 CoT 写进聊天记录"** —— 在 Lily 有数据丢失创伤、
-且把"记忆主权"看得极重的前提下，往 `messages` 正文里塞一段模型自言自语，
-我不推荐在没有明确需要时先做。
+**执行顺序：丙 → 甲**（Bunny 推荐并被采纳）。
+
+> **乙为什么不做**：CoT 会跟着 reply 一起进 `messages` 正文并**永久留在库里**，
+> 也把"thinking 是中间态、不进正文"的设计破了。Lily 有数据丢失创伤、
+> 且把"记忆主权"看得极重 —— 在没有明确需要时，不往 `messages` 正文里塞
+> 一段模型自言自语。
 
 ---
 
-## 六、怎么用它（push + redeploy 之后，一条命令）
+## 六、怎么验证①②修好了（三种，从快到全）
 
-### 第 1 步 · 先确认那个模型在允许列表里的**准确名字**
+### 1）最省事：双击 `tools\CoT体检.bat`
+弹记事本 → 粘 `RELAY_SECRET` → 保存关闭 → 自动跑完并报 `hints.path`。
 
-    GET /app/ext/providers
+### 2）直接看"网关出口帧里有没有 CoT"（线上，一条命令）
 
-看 `providers` 里 `id == "relay"` 那项的 `models` 数组 —— 里面是 `PROVIDER_RELAY_MODELS`
-配的真实模型名。复制那个 thinking 模型的**完整字符串**（少一个字符就会 400 `model_not_allowed`）。
+这是修完①②之后**马上能在线上看到的证据** —— 打网关自己的出口，而不是打诊断端点：
 
-### 第 2 步 · 打诊断端点
-
-PowerShell 里注意**用 `curl.exe`**（直接写 `curl` 是 `Invoke-WebRequest` 的别名，参数不通用）：
-
-```powershell
-$KK = "<你的 RELAY_SECRET>"
-curl.exe -s -X POST "https://kaelnlily79.zeabur.app/app/ext/providers/raw" `
-  -H "Authorization: Bearer $KK" -H "Content-Type: application/json" `
-  -d '{"provider_id":"relay","model":"<第 1 步的模型名>","prompt":"在吗","stream":true}' `
-  | python -m json.tool
+```bash
+curl.exe -sN -X POST "https://kaelnlily79.zeabur.app/app/ext/llm/chat" \
+  -H "Authorization: Bearer <RELAY_SECRET>" -H "Content-Type: application/json" \
+  -d '{"provider_id":"relay","model":"claude-opus-4-6-thinking","messages":[{"role":"user","content":"在吗"}],"stream":true,"max_tokens":32}'
 ```
 
-想省 token 可以加 `"max_tokens": 32`；想看非流式就把 `"stream"` 改成 `false`。
+看到 `"delta":{"reasoning_content":"…"}` 的帧 = **①② 生效**。
+⚠️ PowerShell 里别接 `| python -m json.tool`（PS 会把字节流按行拆，json.tool 会卡住不打印）。
 
-### 第 3 步 · 读返回
+### 3）最全：`python tools/verify_all.py`
+八套里的第 5 套（P1 模型网关）覆盖这件事，共 **166 项**，其中 71 那一组是
+"打真端点"验的、76 那一组是纯逻辑验的。全绿 = 没回归。
 
-| 看哪里 | 说明 |
-|---|---|
-| `hints.path` | **`A` / `B` / `C` / `A+B`** —— 自动判定的结论，先看这个 |
-| `hints.reasoning_fields` | 命中的独立字段名（有值 = 上游确实发了 CoT → 路径 A） |
-| `hints.inline_thinking` | `true` = CoT 被内联在正文里（路径 B） |
-| `frames` | **原始帧**（未经任何解析）。人工扫一眼，这是最终裁决 |
-| `request_body` | 我们**真正发出去**的 body —— 诊断"是不是少发了 `reasoning_effort`"的直接证据 |
-
-**三种结果分别意味着什么、下一步做什么：**
-
-- **`path = A`** → 上游给了、被我们丢了（断点①②）→ 做网关那两处纯新增改动（可离线验收）；③ 仍留给 P3
-- **`path = B`** → 上游把 CoT 内联在正文里 → 该动的是**前端**（断点④），不是网关；
-  或者走"乙"路线（⚠️ 代价：CoT 会进 `messages` 正文并永久留在库里）
-- **`path = C`** → **上游压根没给** → 问题在**请求参数**：配上
-  `PROVIDER_RELAY_EFFORT_PARAM`（见 `deploy/zeabur-env.example` 的 effort 段）再打一次，
-  多半是"要开 reasoning 才出 CoT"
-
-> 🔴 只有 `path = A` 才需要动网关；`B` 动前端；`C` 一行代码都不用改、只要配 env。
-> **先别急着施工，把 `path` 拿到手再说。**
+---
 
 ## 七、顺带说清一件事（免得混淆）
 
 `effort`（设置页那个推理强度）和 CoT **是同一把钥匙的两面**：
 
 - `effort` = **要不要让他想、想多深**（要发给上游的参数）
-- CoT = **他想了什么**（上游发回来的内容）
+- CoT     = **他想了什么**（上游发回来的内容）
 
-P1 收尾已经把 `effort` 做到"能落库、能配字段名发出去"（默认不发，见
-`deploy/zeabur-env.example` 的 effort 段）。所以**如果第四节确诊出是路径 C
-（上游压根没给）**，那把 `PROVIDER_RELAY_EFFORT_PARAM` 配上再试，
-很可能就直接把 CoT 打开了 —— 那时候①②两处网关改动就是最后一块拼图。
+`effort` 已做到"能落库、能配字段名发出去"（默认不发，见
+`deploy/zeabur-env.example` 的 effort 段）。本次确诊是**路径 A**，
+说明那台站**不用配 effort 也在出 CoT**（模型名里带 `-thinking` 就自己出），
+所以 `PROVIDER_RELAY_EFFORT_PARAM` 保持不配即可。
 
-三条路的顺序因此是：
+---
 
-    ① 诊断端点看原始帧  →  ② 若"上游没给"就先配 EFFORT_PARAM  →  ③ 再做网关①②  →  ④ P3 做③
+## 八、这次改动清单（便于回看 / 回退）
+
+| 文件 | 改了什么 |
+|---|---|
+| `deploy/app_ext/providers.py` | 新增 `parse_stream_parts()` / `parse_complete_parts()` / `_reasoning_of()` / `_REASONING_KEYS`；老的 `parse_stream()` / `parse_complete()` 变成薄包装，**行为一个字没变** |
+| `deploy/app_ext/llm_gateway.py` | `stream_chat()` 增加 `on_reasoning` 回调与 `reasoning` 汇总；`complete()` 也汇总 `reasoning`；新增 `expose_reasoning()`（读 `LLM_EXPOSE_REASONING`，默认开） |
+| `deploy/app_ext/llm_routes.py` | `_chunk()` 增加 `reasoning` 参数（无 CoT 时不加字段）；`_do_chat()` 队列加 `("r", …)` 分支；`_do_complete()` 的 message 带 `reasoning_content` |
+| `tools/providers_check.py` | 145 → **166** 项：71 那一组（打真端点，含"模拟身体消费"）+ 71b/71c/71d/71e 对照 + 76a-76m（纯逻辑）；顺手消掉假上游提前断开的 Traceback 噪音 |
+| `deploy/zeabur-env.example` | 新增 `LLM_EXPOSE_REASONING` 说明 |
+| `deploy/README.md` / `tools/verify_all.py` | 验收数同步为 166 |
+
+🔴 **红线自查**：`git diff --stat e7c9bf5 -- backend/ examples/ channel/` = **空**。
+
+### 可逆性
+
+- 想回到"出口不带 CoT"：Zeabur 配 `LLM_EXPOSE_REASONING=0`，**不用回滚代码**
+- 老接口 `parse_stream()` / `parse_complete()` 语义未变 → 任何老调用方无感
+- 没有 CoT 的响应，出口形状**逐字节相同**（验收 71b/71e 盯着）
