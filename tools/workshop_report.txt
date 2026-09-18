@@ -1,0 +1,129 @@
+工作间验收 —— 房子的第一间房 + MCP 门
+时间：2026-09-18 21:45:53
+仓库：C:\Users\86187\WorkBuddy\2026-07-26-20-49-33\kael-home
+临时目录：C:\Users\86187\AppData\Local\Temp\kaelhome_workshop_ho268qff
+
+[OK] A1 做一件 → 目录 + index.html + meta.json 都在
+[OK] A2 id 形状 = YYYYMMDD-xxxx（日期是今天）
+[OK] A3 meta 字段齐全
+[OK] A4 正文逐字节等于传进去的 html
+[OK] A4b meta.bytes 与真实字节数一致
+[OK] A4c 第一次做出来 revision=1 且 revisions 只有一条
+[OK] A5 列表最近动过在前（第二件排第一）
+[OK] A6 改一件 → revision=2
+[OK] A7 🔴 旧版留档 r1.html 真的在，且内容是原来那一版
+[OK] A9 改完之后 index.html 是新内容
+[OK] A8 🔴 旧版**读得回来**（不然'旧版留着'只是一句说法）
+[OK] A10 read 默认读现在这一版
+[OK] A11 不存在的版本 → 人话错误（且列出有哪些旧版）
+[OK] A12 改不存在的 id → 人话错误
+[OK] A13 读不存在的 id → 人话错误
+[OK] A14 改的时候不传 note → 沿用原来的说明
+[OK] A15 署名默认 kael；改的时候不传就沿用
+[OK] A16 🔴 一组合法外的 id 形状全部被拒
+[OK] A17 🔴 路径穿越被拒，且根目录外没有多出东西
+[OK] A18 空 title → 拒
+[OK] A19 空 html / 非字符串 → 拒
+[OK] A20 正文超上限 → 拒，且人话里带实际大小
+[OK] A21 title 超长 → 拒，且带数值
+[OK] A22 note 超长 → 拒
+[OK] A23 🔴 件数到顶 → 拒（不是静默丢弃，也不是悄悄覆盖）
+[OK] A23b 到顶时前两件都还在
+[OK] A24 🔴 总量到顶 → 拒（保护 /data 卷）
+[OK] A25 🔴 版本数到顶 → 拒，**而且老的那一版还在**
+[OK] A26 meta.json 坏掉 → 列表标 broken 且不崩（其余条目照常）
+[OK] A27 读坏掉的条目 → 人话错误（叫你别改它、先跟 Lily 说一声）
+[OK] A28 不相干的文件与目录被忽略（notes.txt / notanid 不进列表）
+[OK] A29 原子写：目录里没有 .tmp 残留
+[OK] A30 list 的 limit 生效
+[OK] B1 四个工具都注册上了
+[OK] B2 每个都有非空的中文描述
+[OK] B3 每个 inputSchema 都是 type=object
+[OK] B4 make_thing 必填 title+html；revise_thing 必填 id+html
+[OK] B24 schema 明确 additionalProperties=False（多余键要被拒）
+[OK] B5 🔴 重名注册 → 报错（不静默覆盖）
+[OK] B6 🔴 两个房间撞名也报错（说明它们其实是一间房）
+[OK] B7 非法工具名 → 报错
+[OK] B8 input_schema 不是 object → 报错
+[OK] B9 clear_tools(room=) 只摘那一间房的
+[OK] B10 install 幂等（再跑一次工具数不变）
+[OK] B11 tools/list 形状 = [{name, description, inputSchema}]
+[OK] B12 通知（没有 id）→ 不回包
+[OK] B13 未知方法 → -32601（不是静默成功）
+[OK] B14 非对象消息 → -32600
+[OK] B15 🔴 initialize 回显客户端说的版本（打死一个版本会把另一端打死）
+[OK] B15b 声明了 tools 能力 + serverInfo + instructions
+[OK] B16 客户端没带版本 → 用兜底版本（且是个非空字符串）
+[OK] B17 认 MCP-Protocol-Version 头
+[OK] B18 未知名 → isError，并列出可用名字
+[OK] B19 ToolError → isError + 原样带回那句话（他能读懂）
+[OK] B20 工具抛未知异常 → isError，且**不带走整扇门**（后面的调用照常）
+[OK] B21 工具返回非字符串 → 被转成 JSON 文本
+[OK] B22 工具返回 None → 有兜底文案（不是空字符串）
+[OK] B23 arguments 不是对象 → isError
+[OK] C9 🔴 无密钥 POST /mcp → 401
+[OK] C10 🔴 错密钥 → 401
+[OK] C11 🔴 老客户端说 2024-11-05 → 原样回显（写死一个版本会把它打死）
+[OK] C12 通知 → 202（按协议不回 body）
+[OK] C13/C14 GET /mcp → 405（无状态门明确拒绝，不假装成功）
+[OK] C13/C14 DELETE /mcp → 405（无状态门明确拒绝，不假装成功）
+[OK] C15 未知方法 → -32601
+[OK] C16 body 不是 JSON → -32700
+[OK] C17 body 超大 → 413（有护栏，不是拿内存硬扛）
+[OK] C18 /app/ext/mcp 别名也通（给自己人排查用）
+[OK] C1 🔴 官方 mcp SDK 能连上（照 KaelLife scheduler.py:1175-1179 的写法）
+[OK] C2 握手拿到的协议版本非空（回显，不回错）
+[OK] C3 list_tools 拿到四个工具
+[OK] C3b 每个工具的 description 与 inputSchema 都被客户端认了
+[OK] C4 🔴 call_tool make_thing 真的造出了东西（返回里有 id）
+[OK] C4b 返回里给了她那边能打开的东西（或明确说放在架子上）
+[OK] C4c 🔴 返回的 id 在磁盘上真有那个目录（不是只回了一个字符串）
+[OK] C5 call_tool list_things 看得见它
+[OK] C6 call_tool read_thing 原文读得回来（含 SVG）
+[OK] C7 call_tool revise_thing → 第 2 版 + 旧版还在
+[OK] C7b 旧版内容是原始那一版（含 SVG）
+[OK] C8 名字写错 → isError（不是抛异常、不是静默）
+[OK] D0 前置：指向的是 C 组刚造的那一件（目录里没有别人塞的东西）
+[OK] D1 🔴 无密钥 /app/ext/workshop/list → 401
+[OK] D1 🔴 无密钥 /app/ext/workshop/item/20260918-e3a5 → 401
+[OK] D1 🔴 无密钥 /app/ext/workshop/raw/20260918-e3a5 → 401
+[OK] D2 list 200 且 total / items / dir 都在
+[OK] D3 item/{id} 200 且带回 revisions 历史
+[OK] D4 item/不存在 → 404（不是 500）
+[OK] D5 raw 200 且 Content-Type 是 text/html
+[OK] D6 🔴 raw 带 CSP sandbox（顶层直接打开也被关进沙箱）
+[OK] D7 🔴 CSP 里**没有** allow-same-origin —— 否则他写的一段脚本就能读走 localStorage 里的房子密钥
+[OK] D8 raw 带 nosniff + no-referrer（大小写无关地取头）
+[OK] D9 raw?rev=1 看得到旧版（'旧版留着'是可验的）
+[OK] D10 🔴 一组非法 id 一律 4xx（不读得到东西、不 500）
+[OK] D11 🔴 回归：/healthz 仍 200（房子照常营业）
+[OK] D12 🔴 回归：原版 /app/history 仍 200（红线目录没被碰）
+[OK] D13 🔴 回归：/app/ext/me 仍 200（身份层还在）
+[OK] D14 raw 的正文里没有密钥（房子密钥不会被写进他做的东西里）
+[OK] F1 展示页在（web/workshop.html）
+[OK] F2 🔴 预览走 srcdoc（带 Bearer 抓原文再塞进去），URL 里不出现密钥
+[OK] F3 每一处 iframe 都是 sandbox="allow-scripts"，且**没有** allow-same-origin
+[OK] F4 页面里没写死密钥（密钥只从 localStorage 读）
+[OK] F5 三个展示端点都用对了路径
+[OK] F6 菜单里有 Workshop 这一项
+[OK] F7 菜单点 Workshop 会去 workshop.html
+[OK] F8 🔴 sw.js 的 CACHE 提过版本（不提的话装过的客户端永远看旧壳）
+[OK] F9 实跑：/relay/workshop.html 拿得到（200）
+[OK] F10 实跑：页面上是工作间（不是被静态目录的别的页顶掉）
+[OK] F11 实跑：能跟着页面看到那一件（列表端点真返回 C 组造的东西）
+[OK] E1 register 摘要里有 rooms 这一项
+[OK] E2 entrypoint 设了 RELAY_WORKSHOP_DIR 并建目录
+[OK] E3 🔴 app_ext.register 在静态挂载**之前**（否则 API 会被静态目录吃掉）
+[OK] E4 🔴 房间不许自己去碰 KaelLife / 网络（房子是被动的，他的腿在 KaelLife）
+[OK] E5 install 两次不炸（幂等）
+[OK] E5b 工作间的三个展示端点都注册在 /app/ext/workshop/* 下
+[OK] E6 逃生开关在（房间层可整体关掉）
+[OK] E7 verify_all.py 里接了 workshop_check
+[OK] E8a 空库上：会话投影被跳过，而且**日志说了出来**
+[OK] E8b 空库上：四张表照样建好
+[OK] E8c 🔴 空库上：门与房间**照样装上**（这是回归锁 —— 旧写法会让整个 P0/P1/房间层一起装不上）
+[OK] E8d 空库上：身份层端点 200（不是 404）
+[OK] E8e 空库上：MCP 门列出四个工具
+
+共 121 项，通过 121，失败 0
+总检查：全部通过 ✅

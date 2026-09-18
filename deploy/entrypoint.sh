@@ -74,8 +74,11 @@ export RELAY_UPLOAD_DIR="${RELAY_UPLOAD_DIR:-/data/uploads}"
 export RELAY_BRAIN_FILE="${RELAY_BRAIN_FILE:-/data/brain_target}"
 export LOOP_CONFIG="${LOOP_CONFIG:-/data/api_loop.config.json}"
 export VAPID_PRIVATE_PEM="${VAPID_PRIVATE_PEM:-/data/private_key.pem}"
+# 工作间（房子的第一间房）——他做的东西都在这儿，一件一个目录。
+# 必须在 /data 下：它是"他的东西"，不是缓存，重新部署不能丢。
+export RELAY_WORKSHOP_DIR="${RELAY_WORKSHOP_DIR:-/data/workshop}"
 
-mkdir -p "$(dirname "$RELAY_DB")" "$RELAY_UPLOAD_DIR" 2>/dev/null || true
+mkdir -p "$(dirname "$RELAY_DB")" "$RELAY_UPLOAD_DIR" "$RELAY_WORKSHOP_DIR" 2>/dev/null || true
 
 # ---- VAPID 私钥：支持用 base64 环境变量注入 --------------------------------
 # Zeabur 的变量面板不适合贴多行 PEM，所以约定：

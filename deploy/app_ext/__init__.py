@@ -17,6 +17,11 @@
     llm_gateway.py     真发 HTTP、收 SSE
     llm_routes.py      /app/ext/providers 与 /app/ext/llm/*
 
+    🏠 · 房间（2026-09-18 起）
+    mcp.py             **房子的 MCP 门**：一扇门，很多房间（Streamable HTTP，无状态）
+    modules/           房间层，一间房一个文件
+      workshop.py      工作间：他做东西的地方（工具 make/revise/list/read_thing）
+
 挂载方式（`deploy/serve.py`）：
 
     import app_ext
@@ -43,18 +48,32 @@
     sync_from_messages  把已有会话投影进 sessions（有则更新投影字段，不碰 summary）
     identity.install    注册 /app/ext/* 身份与设置端点
     llm_routes.install  注册 /app/ext/providers + /app/ext/llm/*
+    modules.*.install   注册房间（工作间 …）—— 房间自带路由 + MCP 工具
 
 每步都是幂等的，重启 N 次结果一致。
+
+🔴 **而且每一步互不牵连**（2026-09-18 修）：某一步失败只记一条警告并跳过，
+   后面的步骤照跑。这条不是洁癖 —— 全新数据库上「会话投影」必然会失败
+   （`messages` 是后端 lifespan 建的，比 register() 晚），
+   旧写法会让**整个 P0/P1/房间层一起装不上**，而日志看起来一切正常。
+   详见 `register()` 里 `_step` 的注释。
 
 ## 逃生开关（都只影响本包自己）
 
     APP_EXT_DISABLED=1        整个包关掉（回到 P0 之前的状态）
     APP_EXT_SYNC_ON_START=0   启动时不做会话投影
     APP_EXT_LLM_DISABLED=1    只关模型网关（四张表照常）
+    APP_EXT_ROOMS_DISABLED=1  只关房间（门与工作间都不挂；四张表与网关照常）
+
+🔴 **「一个房间挂了不带走别的房间」**：每个房间单独 try —— 工作间注册失败时，
+   模型网关必须还在、房子必须照常营业。这条和"整个包吞异常"是同一个原则，
+   只是又细分了一层。
+
 """
 
 import os
 import sys
+import traceback
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _DEPLOY = os.path.dirname(_HERE)          # .../deploy
@@ -71,6 +90,10 @@ _ROUTES = [
     # 🆕 OpenAI 标准路径别名（P3 通车前置）：身体只会往后拼 `/chat/completions`，
     #    且它在红线目录里改不了 → 只能房子认这条路。按 body 的 stream 分流。
     "/app/ext/llm/v1/chat/completions", "/app/ext/llm/chat/completions",
+    # 🆕 房子的 MCP 门（外网 = /relay/mcp）—— Kael 从 KaelLife 够到家里房间用的
+    "/mcp", "/app/ext/mcp",
+    # 🆕 工作间的展示端点（给网页看，不走 MCP）
+    "/app/ext/workshop/list", "/app/ext/workshop/item/{id}", "/app/ext/workshop/raw/{id}",
 ]
 
 
@@ -79,49 +102,100 @@ def _on(name: str) -> bool:
 
 
 def register(relay, public_prefix: str = "/") -> dict:
-    """把 P0 地基 + P1 模型网关挂到 relay 上。**永不抛异常**（见文件顶部第二节）。
+    """把 P0 地基 + P1 模型网关 + 房间层挂到 relay 上。**永不抛异常**（见文件顶部第二节）。
 
     返回诊断摘要，调用方（serve.py）打印出来。
     """
     summary = {"ok": False, "schema": None, "owner": None, "sync": None,
-               "routes": None, "gateway": None, "error": None}
+               "routes": None, "gateway": None, "rooms": None,
+               "warnings": [], "error": None}
 
     if _on("APP_EXT_DISABLED"):
         summary["error"] = "disabled by APP_EXT_DISABLED"
         print("[app_ext] 已按 APP_EXT_DISABLED 关闭，跳过四张表 / 身份层 / 模型网关")
         return summary
 
+    def _step(label: str, fn, default=None):
+        """跑一步。**失败只记警告，绝不中断后面的步骤。**
+
+        🔴 为什么不是"一步失败就整段退出"（2026-09-18 修的真 bug）：
+
+           步骤③（会话投影）会在**全新数据库**上失败 —— `messages` 表是后端
+           lifespan 里的 `init_db()` 建的，而 `app_ext.register()` 跑在
+           serve.py 的 **import 期，比 lifespan 早**。
+
+           于是"第一次部署到空的 /data"时：③ 抛 `no such table: messages`
+           → 旧写法的 `except` 一把兜住 → **四张表装了、身份层 / 模型网关 /
+           房间层全都没装**，而日志只说"房子功能不受影响"（这话对聊天是对的，
+           对整个 P0/P1 层是假的）。等有人聊过一次、messages 建好了，
+           下次重启就一切正常 —— **自愈的 bug 最阴：它只在第一次出现。**
+        """
+        try:
+            return fn()
+        except Exception as e:
+            traceback.print_exc()
+            msg = f"{label} 失败（已跳过这一步，其余照常）：{type(e).__name__}: {e}"
+            print(f"[app_ext] ⚠️ {msg}")
+            summary["warnings"].append(msg)
+            return default
+
     try:
         from . import schema, identity, sessions_store, llm_routes
 
         # ① 建表 + 迁移（幂等；内部有"绝不碰 messages"的运行时断言）
-        summary["schema"] = schema.ensure_schema(relay)
+        summary["schema"] = _step("建表与迁移", lambda: schema.ensure_schema(relay))
 
         # ② 播种房主（有则不动）
-        summary["owner"] = identity.ensure_owner(relay)
+        summary["owner"] = _step("播种房主", lambda: identity.ensure_owner(relay))
 
         # ③ 把已有会话投影进 sessions 表
         #    默认每次启动都跑（幂等）；会话特别多的库可以用 APP_EXT_SYNC_ON_START=0 关掉
+        #    ⚠️ 全新库上这一步会失败（messages 还没建）—— 本来就是"没有可投影的东西"，
+        #       所以它失败是预期的、无害的，只记警告。
         sync_on = os.environ.get("APP_EXT_SYNC_ON_START", "1").strip().lower()
         if sync_on not in ("0", "false", "no"):
-            summary["sync"] = sessions_store.sync_from_messages(relay)
+            summary["sync"] = _step("会话投影",
+                                    lambda: sessions_store.sync_from_messages(relay))
 
         # ④ 身份 / 设置端点
-        identity.install(relay, public_prefix)
+        _step("身份层端点", lambda: identity.install(relay, public_prefix))
 
         # ⑤ 模型网关端点（P1）
         if _on("APP_EXT_LLM_DISABLED"):
             summary["gateway"] = "disabled by APP_EXT_LLM_DISABLED"
         else:
-            llm_routes.install(relay, public_prefix)
-            from . import providers
-            summary["gateway"] = providers.summary_line()
+            def _gw():
+                llm_routes.install(relay, public_prefix)
+                from . import providers
+                summary["gateway"] = providers.summary_line()
+            _step("模型网关", _gw)
+
+        # ⑥ 房间层：门（mcp.py）+ 房间（modules/*）
+        #    🔴 每个房间**单独 try** —— 一间房挂了不许带走别的房间，更不许带走房子。
+        #       （这条原则现在往上贯通到每一步，见 `_step` 的注释。）
+        if _on("APP_EXT_ROOMS_DISABLED"):
+            summary["rooms"] = ["disabled by APP_EXT_ROOMS_DISABLED"]
+        else:
+            from . import mcp as _mcp
+            from .modules import workshop
+
+            rooms = []
+            _step("MCP 门", lambda: _mcp.install(relay, public_prefix))
+
+            for _name, _mod in (("workshop", workshop),):
+                def _room(m=_mod):
+                    m.install(relay, public_prefix)
+                    rooms.append(m.summary_line())
+                _step(f"房间 {_name}", _room)
+
+            # 工具数要在房间都挂完之后才准
+            _step("MCP 门摘要", lambda: rooms.append(_mcp.summary_line()))
+            summary["rooms"] = rooms
 
         summary["routes"] = list(_ROUTES)
-        summary["ok"] = True
+        summary["ok"] = not summary["warnings"]
 
     except Exception as e:                     # ← 有意捕获全部，见文件顶部
-        import traceback
         summary["error"] = f"{type(e).__name__}: {e}"
         print(f"[app_ext] ⚠️ 初始化失败（房子功能不受影响）：{summary['error']}")
         traceback.print_exc()
@@ -141,4 +215,10 @@ def register(relay, public_prefix: str = "/") -> dict:
             f"保留摘要 {summary['sync']['untouched_summary']}"
         )
     print(f"[app_ext] 模型网关就绪 · {summary['gateway']}")
+    for line in (summary.get("rooms") or []):
+        print(f"[app_ext] {line}")
+    if summary["warnings"]:
+        print(f"[app_ext] ⚠️ {len(summary['warnings'])} 个步骤被跳过（房子照常营业）：")
+        for w in summary["warnings"]:
+            print(f"[app_ext]   - {w}")
     return summary

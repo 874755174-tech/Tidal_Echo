@@ -372,7 +372,86 @@ CORSMiddleware
 >
 > 完整诊断见 **`CoT显示链路.md`**（断点表、两条独立失效路径、改动清单、回退办法）。
 
-## `web/index.html`：8 处家装 + 1 处 bug 修复（**唯一被动过的原生文件**）
+## 第七道缝：房间层（2026-09-18）—— **一扇 MCP 门 + 第一间房（工作间）**
+
+前面六道缝解决的是"房子自己能不能住"。这一道回答另一个问题：
+**他在外面（KaelLife）怎么够到房子里的东西。**
+
+### 为什么需要一扇门
+
+分工是定死的：**KaelLife = 腿**（会自己醒来、会外出、会决定）；
+**房子 = 家**（东西都存这儿，但房子是被动的 —— 见 `扩展边界.md` "房子不调 MCP"）。
+所以"房子里的房间"必须由**他去够**，而不是房子去喊他。
+
+他手里唯一的触手是 **MCP**（`scheduler.py` 里那三行官方 SDK）。
+于是房子开一扇 **Streamable HTTP MCP 端点**（`/mcp`），房间把工具挂到同一扇门上。
+**KaelLife 那边的代码一行都不用改** —— 它本来就在说 MCP。
+
+### 🔴 三条硬约束（踩过就知道为什么）
+
+1. **协议版本必须回显客户端说的那个。** 客户端 `initialize` 后校验
+   `result.protocolVersion in SUPPORTED_PROTOCOL_VERSIONS`；KaelLife 钉的是
+   `mcp>=1.2.0,<2`（版本跨度 2024-11-05 ~ 2025-11-25）。**写死任一个版本就会打死另一端。**
+   没带版本时用 `_FALLBACK_VERSION` 兜底。
+2. **无状态。** 只实现 POST（一次一答）：不发 session id、不开 SSE 长流、
+   GET/DELETE 明确 **405**（"这扇门就是这么开的"，不假装成功）。
+3. **鉴权 fail-closed。** `relay.check_auth(request)` 必须在**读 body 之前**跑；
+   没密钥/错密钥 → **401（HTTP 层，不是 JSON-RPC 错误）**。工具内部抛错则相反：
+   **HTTP 200 + `result.isError=true` + 原样带回那句话** —— 他能读懂"为什么没成"。
+
+### 一扇门，很多房间
+
+| 文件 | 是什么 |
+|---|---|
+| `deploy/app_ext/mcp.py` | **门**。工具注册表（重名报错，不静默覆盖）+ JSON-RPC 分发 + `install(relay, prefix)` |
+| `deploy/app_ext/modules/__init__.py` | **房间层的约定**：一个房间 = 一个文件 + 一个自己的数据目录 + 一套自己的验收 |
+| `deploy/app_ext/modules/workshop.py` | **第一间房：工作间**（4 个工具 + 3 个展示端点） |
+
+加第二间房（卧室 / 日历）就是再写一个 `modules/xxx.py`，调
+`mcp.register_tool(..., room="xxx")` 挂到**同一扇门**上。
+
+### 工作间：给他一支笔
+
+他要的是**自己捣鼓东西**（HTML 生成页面那种）。所以第一间房先只给这个：
+
+| 工具 | 干什么 |
+|---|---|
+| `make_thing(title, html, note)` | 做一件新的 |
+| `revise_thing(id, html, note)` | 改一件做过的 —— **旧版留档 `rN.html`，永不删** |
+| `list_things(limit)` | 架子上有什么（最近动过在前） |
+| `read_thing(id, rev)` | 读原文；给 `rev` 能读**旧版**（不然"旧的留着"只是一句说法） |
+
+**存文件，不存数据库表。** 一件东西一个目录：`id/index.html` + `rN.html` + `meta.json`。
+理由：产出物本来就是文件；不动 schema 迁移；出问题**整个目录直接拷走**就能备份。
+落点 `RELAY_WORKSHOP_DIR`（**默认 `/data/workshop`** —— 必须在 `/data` 下，否则重启就丢）。
+
+上限（全部**拒绝**而不是删旧的）：单件 512 KB、架上 500 件、整间 200 MB、
+单件版本 200 版、`read_thing` 最多回 300 KB。
+
+### 🔴 展示页的安全：密钥**不进** URL
+
+`web/workshop.html`（她看的那一面）要预览他写的 HTML。**不能用 `<iframe src="…?token=…">`**：
+他写的是任意 HTML，里面若有脚本，**能从自己的 `location` 里把密钥读走**。
+所以页面改成：带 Bearer 抓原文 → 塞进 `srcdoc`。URL 里永不出现密钥，
+且沙箱只给 `allow-scripts`、**不给 `allow-same-origin`** → 里面脚本碰不到房子的 localStorage。
+
+后端那侧还有第二层：`raw` 响应带
+`Content-Security-Policy: sandbox allow-scripts; …`（**顶层直接打开也被关进沙箱**）
++ `X-Content-Type-Options: nosniff` + `Referrer-Policy: no-referrer`。
+
+### 🔴 一个真 bug：全新数据库上，整个扩展层装不上
+
+`messages` 表在 `backend/app.py` 的 **lifespan → init_db()** 里建，
+而 `app_ext.register()` 跑在 `serve.py` 的 **import 期 —— 更早**。
+于是首次部署（空 `/data`）时 `register()` 抛 `no such table: messages`，
+被外层 `except` 一把兜住 → **四张表 / 身份层 / 模型网关 / 房间层全没装上**，
+日志还说"房子功能不受影响"（对聊天对，对 P0/P1 层**假**）。
+
+修法：`app_ext/__init__.py` 里加 `_step()` —— **每步独立 try，失败只记警告跳过，不中断后续**。
+`summary` 多一个 `warnings` 字段，`ok = not warnings`。
+`workshop_check.py` 的 E8 组就是这条的回归锁（专门起一个**空库**的房子）。
+
+## `web/index.html`：9 处家装 + 1 处 bug 修复（**唯一被动过的原生文件**）
 
 按 Lily 的反馈做的"家装"。
 **全部是 UI、登录体验与提示文案，不含任何 KaelLife 逻辑**，
@@ -390,10 +469,12 @@ CORSMiddleware
 | 6 | 会话条目「改名 / 归档 / 删除」+ 二次确认 + 归档区 | 配套后端 `deploy/sessions_manage.py`（新路径 `/app/sessions/manage/*`） | 原版只有"删掉整段对话"的入口、且没有归档概念。归档（纯可逆）与清空（标记式、物理行保留）**语义分开** |
 | 7 | 修透明弹层：删除确认框与会话面板**整片透明** | `.confirm-card` / `.session-pop` | 🔴 `--panel-bg` / `--seg-line` **在这个文件里从未定义过** → CSS 属性被整条**静默丢弃**（不报错、控制台无提示）。修法：改成不依赖变量的实色 + 毛玻璃。commit `cad47ce` |
 | 8 | 设置页「模型 / effort / 上下文阈值」三个**假按键接真** + 新增「验证模型名」 | `#modelProvSeg` / `#modelSeg` / `#modelHint` / `#modelProbeRow` + `refreshModelCard()` 系列 | 🆕 P1 收尾（2026-09-15）。原版这 4 个模型按钮是硬编码 `Opus 4.6/4.7/4.8/Fable 5`、点了只换底色，且什么都不存。现在只显示**服务端允许列表**里的东西、选中即落库（见本文 P1 收尾一节） |
+| 9 | 菜单新增第 7 个入口 **Workshop**（点进去 `location.assign("workshop.html")`） | `.menu-list` 里一个新 `.menu-item[data-menu="workshop"]` + 菜单点击回调多一个分支 | 🆕 房间层（2026-09-18）。他的**工作间**要有她这边能推开的门；原版菜单 6 项（Room 是占位），新页面 `web/workshop.html` 是新文件、不改原版 |
 | 补丁 | 🔴 **修一个原版就有的会话归属 bug**：在「旧主线 / Desktop 记录」（虚拟会话 `__legacy__`）里发消息，回复会落到别的会话 | 新增 `ensureRealSession()`（`doSend` / `apiSend` 两个发送入口各拦一道）+ 页面级常驻提示条（`#pageNotice` / `LEGACY_NOTICE`，2026-09-14 晚从面板内挪到页面级） | 根因：**会话归属有两份**（前端视图 / 身体全局）→ 详见 `扩展边界.md` §2.5。**这一条是修 bug，不是家装**（唯一一处涉及行为的改动） |
 
 其中 2、3 各是一处常量，改回原值即可；1 是一行 CSS；4、5、6 是新增纯前端函数；
 7 是修一个原版就有的 CSS 变量 bug；8 是 P1 收尾（新增纯前端函数，且**首次把设置页接到真实后端**）；
+9 是房间层（菜单多一项，指到一个新文件）；
 **补丁**那条是修一个原版就有的**会话归属 bug**（唯一涉及行为的改动）。
 
 ## 相关文件
@@ -405,8 +486,11 @@ CORSMiddleware
 - `deploy/sessions_manage.py` — 会话归档 / 删除 / 改名（数据库直读直写，不走身体）
 - `deploy/app_ext/` — **P0 地基**：四张表（`users`/`settings`/`sessions`/`memories`）+ 身份层 + `/app/ext/*`
 - `deploy/app_ext/providers.py` · `llm_gateway.py` · `llm_routes.py` — **P1 模型网关**：供应商允许列表 + 三格式适配 + `/app/ext/providers`、`/app/ext/llm/*`（含 **OpenAI 路径别名** `/v1/chat/completions`，通车前置）
+- `deploy/app_ext/mcp.py` — 🆕 **房间层的门**：Streamable HTTP MCP（`/mcp` + 别名 `/app/ext/mcp`），工具注册表 + JSON-RPC 分发；**协议版本回显**、无状态、鉴权 fail-closed
+- `deploy/app_ext/modules/` — 🆕 **房间**：`__init__.py` 写约定，`workshop.py` 是**工作间**（`make_thing`/`revise_thing`/`list_things`/`read_thing` + 展示端点 `/app/ext/workshop/*`）
+- `web/workshop.html` — 🆕 工作间的展示页（预览走 `srcdoc`，**密钥不进 URL**）
 - `deploy/zeabur-env.example` — 环境变量清单（哪些必填、哪些别填；**P1 段在最后**）
-- `tools/verify_all.py` — **一次跑完全部验收**（八套 + 红线，exit 0 = 全绿；跑前先确认 8080 空）
+- `tools/verify_all.py` — **一次跑完全部验收**（九套 + 红线，exit 0 = 全绿；跑前先确认 8080 空）
 - `tools/secaudit.py` — 访问控制体检（21 项，不连公网）
 - `tools/sessioncheck.py` — 会话数据层 + 兜底断言（19 项）
 - `tools/sessionfallback_check.py` — 兜底四场景 + 鉴权红线（34 项）
@@ -414,7 +498,9 @@ CORSMiddleware
 - `tools/session_ui_check.mjs` — 会话归档/删除/改名 前端（40 项，jsdom 真跑 `index.html`）
 - `tools/app_ext_check.py` — **P0 地基验收（55 项：库层 + HTTP 层 + 红线）**
 - `tools/providers_check.py` — **P1 模型网关验收（166 项：纯逻辑 + 真 HTTP + 端点 + OpenAI 路径别名 + 通车仿真 + 参数下发/effort + CoT 透传 + 红线；自带本地假上游，不需要真 key）**
+- `tools/workshop_check.py` — 🆕 **房间层验收（121 项：工作间存储 / 工具注册表 / 真 MCP 客户端 / REST 与 raw 安全 / 展示页 / 空库回归）**；
+  C 组**用官方 mcp SDK 真连**（照 `scheduler.py` 那三行），不是自己造个客户端骗自己
 - `tools/model_ui_check.mjs` — 🆕 **设置页模型/参数前端（35 项，jsdom 真跑 `index.html`）**：
   专治"后端接口对、前端逻辑错"这类只有真跑页面才看得见的问题 ——
   假状态、PUT 失败不回滚、以及"拉不到就硬编一个"这三件事各有用例守着
-- `tools/jscheck.py` — 抽出 `index.html` 内联 JS 做语法检查
+- `tools/jscheck.py` — 抽出 `web/*.html` 内联 JS 做语法检查（index / album / workshop 全覆盖）
