@@ -29,6 +29,7 @@
      7     🔴 WAL 模式下（有未 checkpoint 的写入）仍然一致
      8     库不存在 → 明确报错（不是静默给个空文件）
      9-10  jsonl 首行 `_meta`；表清单里 `memories` 在（哪怕 0 行）
+     9b    🔴 每条**以换行结尾**（粘成一行 = grep / wc -l 全废 —— 09-19 真踩过）
      11    🔴 能 grep 到一条已知消息
      12    `meta` 列摊开成对象（人能读）
      13    🔴 **正文恰好长得像 JSON 时，不许被摊开**（内容被改是看不出来的）
@@ -42,6 +43,7 @@
      3-4   /db 无密钥 401；有密钥 200 + `attachment` + 是 SQLite 文件头
      5     🔴 下载下来的那一份能被独立打开，且与源一致
      6-7   /jsonl 能 grep 到那条已知消息；/files 是合法 gzip+tar
+     6b    🔴 **下载件**一行一条：换行数 == 记录数、每行可 parse、末行有换行
      8-9   🔴 `?token=` → **400**（本端点有意与房子别处不同）；错密钥 401
      10    🔴 只读：POST /db → 405
      11    🔴 导出期间写不受影响（导出→写→再导出，行数 +1）
@@ -429,6 +431,10 @@ def part_a(tmp: Path) -> None:
     chk("A9 jsonl 首行是 `_meta`，带生成时间与表清单",
         bool(meta) and "generated" in meta and isinstance(meta.get("tables"), list),
         (lines[0][:120] if lines else "(空)"))
+    no_lf = [i for i, ln in enumerate(lines) if not ln.endswith("\n")]
+    chk("A9b 🔴 jsonl 每条**以换行结尾**（少了它 N 条粘成一整行，grep / wc -l 全废）",
+        bool(lines) and not no_lf,
+        f"共 {len(lines)} 条，缺换行结尾的 {len(no_lf)} 条 {no_lf[:5]}")
     tab_names = {t["name"] for t in (meta or {}).get("tables", [])}
     chk("A10 `_meta` 的表清单 = EXPORT_TABLES ∩ 库里真有的表（本例 = messages/users）",
         tab_names == {"messages", "users"}, str(sorted(tab_names)))
@@ -555,6 +561,20 @@ def part_b(tmp: Path, base: str) -> None:
     text = _b.decode("utf-8", "replace")
     chk("B6 /jsonl 能 grep 到那条已知消息（人可读的那一份真能读）",
         st == 200 and CANARY in text and '"_meta"' in text, f"{st} {len(_b)} 字节")
+    # 🔴 上面那条只做子串搜索 —— 记录粘成一行它照样绿。真正的 JSONL 契约在这里：
+    http_lines = [x for x in text.split("\n") if x.strip()]
+    parse_ok = True
+    for x in http_lines:
+        try:
+            json.loads(x)
+        except Exception:
+            parse_ok = False
+            break
+    chk("B6b 🔴 **下载下来的那一份**一行一条：换行数 == 记录数，每行都能 parse，末行有换行",
+        st == 200 and parse_ok and text.endswith("\n")
+        and text.count("\n") == len(http_lines) and len(http_lines) >= 2,
+        f"换行 {text.count(chr(10))} / 非空行 {len(http_lines)} / "
+        f"末行有换行 {text.endswith(chr(10))} / 每行可 parse {parse_ok}")
     st, _b, h = req_bytes(A_FILES, token=SECRET)
     got = []
     try:

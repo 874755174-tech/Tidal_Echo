@@ -228,6 +228,10 @@ def iter_jsonl(relay):
 
     第一行是 `_meta`（谁、什么时候、几张表各多少行），之后每行带 `_table` —— 
     这样一条 `grep` 就能定位到"哪张表里的哪一条"。
+
+    🔴 每条**必须带换行结尾** —— 少了它，N 条会粘成一整行，
+    `grep` / `wc -l` / 逐行读全废（09-19 真踩过：18 条挤成 1 行 17KB）。
+    注意"记录本身合法"不等于"文件是 JSONL" —— 验收要**数换行**，不能只 parse。
     """
     src_path = db_path(relay)
     if not src_path.exists():
@@ -248,7 +252,7 @@ def iter_jsonl(relay):
             "not_included": dict(NOT_IN_JSONL),
             "dropped_fields": {k: sorted(v) for k, v in DROP_FIELDS.items()},
         }
-        yield json.dumps({"_meta": meta}, ensure_ascii=False)
+        yield json.dumps({"_meta": meta}, ensure_ascii=False) + "\n"
 
         for table in EXPORT_TABLES:
             if table not in have:
@@ -259,7 +263,7 @@ def iter_jsonl(relay):
                 for k, v in list(d.items()):
                     d[k] = _maybe_json(k, v)
                 d["_table"] = table
-                yield json.dumps(d, ensure_ascii=False)
+                yield json.dumps(d, ensure_ascii=False) + "\n"
     finally:
         conn.close()
 

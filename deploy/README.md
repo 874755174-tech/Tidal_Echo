@@ -564,10 +564,14 @@ GET /app/ext/archive/files   → tar.gz（工作间产物 + 上传的东西）
 - `tools/providers_check.py` — **P1 模型网关验收（166 项：纯逻辑 + 真 HTTP + 端点 + OpenAI 路径别名 + 通车仿真 + 参数下发/effort + CoT 透传 + 红线；自带本地假上游，不需要真 key）**
 - `tools/workshop_check.py` — 🆕 **房间层验收（121 项：工作间存储 / 工具注册表 / 真 MCP 客户端 / REST 与 raw 安全 / 展示页 / 空库回归）**；
   C 组**用官方 mcp SDK 真连**（照 `scheduler.py` 那三行），不是自己造个客户端骗自己
-- `tools/archive_check.py` — 🆕 **P2-0 导出验收（53 项）**：A 组**故意用 WAL + 未 checkpoint 的写入**
+- `tools/archive_check.py` — 🆕 **P2-0 导出验收（55 项）**：A 组**故意用 WAL + 未 checkpoint 的写入**
   证明快照不裸拷能自洽（副本独立打开 / 表名行数一致 / 源库一字未动）；B 组走真 HTTP
   （`?token=` 必须 400、POST 必须 405、导出期间写不受影响、临时快照不残留）；
   C 组守「只注册 GET / 不 import mcp」；D 组守页面「密钥不进 URL」
+  🔴 **A9b / B6b 守「jsonl 一行一条」**（换行数 == 记录数、逐行可 parse、末行有换行）——
+  这两条是 09-19 补的：原先只做「能 grep 到 / 能 parse」，记录粘成一整行照样全绿；
+  真导一份下来才发现 18 条挤成 1 行 17KB，`grep`/`wc -l` 全废。
+  **"记录本身合法" ≠ "文件是 JSONL"** —— 验收要**数换行**。
 - `tools/model_ui_check.mjs` — 🆕 **设置页模型/参数前端（35 项，jsdom 真跑 `index.html`）**：
   专治"后端接口对、前端逻辑错"这类只有真跑页面才看得见的问题 ——
   假状态、PUT 失败不回滚、以及"拉不到就硬编一个"这三件事各有用例守着

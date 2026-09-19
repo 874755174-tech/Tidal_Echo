@@ -1,7 +1,7 @@
 导出 / 快照验收 —— P2-0
-时间：2026-09-19 13:18:23
+时间：2026-09-19 14:09:19
 仓库：C:\Users\86187\WorkBuddy\2026-07-26-20-49-33\kael-home
-临时目录：C:\Users\86187\AppData\Local\Temp\kael-archcheck-0t31q1a6
+临时目录：C:\Users\86187\AppData\Local\Temp\kael-archcheck-q17l5h4a
 
 [OK] A1 快照产出了文件，且自报一致
 [OK] A1b 🔴 快照能被**独立** sqlite 打开
@@ -13,6 +13,7 @@
 [OK] A7 🔴 WAL + 未 checkpoint 的写入下仍然一致（裸拷在这里就死了）
 [OK] A8 库不存在 → 明确报错（不是静默给个空文件）
 [OK] A9 jsonl 首行是 `_meta`，带生成时间与表清单
+[OK] A9b 🔴 jsonl 每条**以换行结尾**（少了它 N 条粘成一整行，grep / wc -l 全废）
 [OK] A10 `_meta` 的表清单 = EXPORT_TABLES ∩ 库里真有的表（本例 = messages/users）
 [OK] A11 🔴 能 grep 到一条已知消息
 [OK] A12 `meta` 列摊开成对象（人能读）
@@ -28,6 +29,7 @@
 [OK] B4 /db → 200 + attachment + 真正的 SQLite 文件头
 [OK] B5 🔴 **下载下来的那一份**能被独立打开、与源一致、正文在
 [OK] B6 /jsonl 能 grep 到那条已知消息（人可读的那一份真能读）
+[OK] B6b 🔴 **下载下来的那一份**一行一条：换行数 == 记录数，每行都能 parse，末行有换行
 [OK] B7 /files → 200 + 合法 gzip+tar，里面真装着工作间与上传
 [OK] B8 🔴 `?token=` → **400**（导出端点有意与房子别处不同：密钥不许拼进 URL）
 [OK] B9 错密钥 → 401
@@ -57,5 +59,5 @@
 [OK] C10 空库上：info 200（不是 404）
 [OK] C11 🔴 空库上也能导出（第一次真动库之前，这条路就得能用）
 
-共 53 项，通过 53，失败 0
+共 55 项，通过 55，失败 0
 总检查：全部通过 ✅
