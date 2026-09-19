@@ -22,6 +22,10 @@
     modules/           房间层，一间房一个文件
       workshop.py      工作间：他做东西的地方（工具 make/revise/list/read_thing）
 
+    🧳 · 导出（P2-0，2026-09-19 起）
+    archive.py         **导出 / 快照**：P2 的第一件。只读、只有 GET、不挂 MCP 门
+                       （房间给 Kael 走 MCP，导出给 Lily 走 HTTP + 密钥 —— 别混）
+
 挂载方式（`deploy/serve.py`）：
 
     import app_ext
@@ -49,6 +53,7 @@
     identity.install    注册 /app/ext/* 身份与设置端点
     llm_routes.install  注册 /app/ext/providers + /app/ext/llm/*
     modules.*.install   注册房间（工作间 …）—— 房间自带路由 + MCP 工具
+    archive.install     注册 /app/ext/archive/*（P2-0 导出，只读，不是房间）
 
 每步都是幂等的，重启 N 次结果一致。
 
@@ -64,6 +69,7 @@
     APP_EXT_SYNC_ON_START=0   启动时不做会话投影
     APP_EXT_LLM_DISABLED=1    只关模型网关（四张表照常）
     APP_EXT_ROOMS_DISABLED=1  只关房间（门与工作间都不挂；四张表与网关照常）
+    APP_EXT_ARCHIVE_DISABLED=1 只关导出（四张表 / 网关 / 房间照常）
 
 🔴 **「一个房间挂了不带走别的房间」**：每个房间单独 try —— 工作间注册失败时，
    模型网关必须还在、房子必须照常营业。这条和"整个包吞异常"是同一个原则，
@@ -94,6 +100,9 @@ _ROUTES = [
     "/mcp", "/app/ext/mcp",
     # 🆕 工作间的展示端点（给网页看，不走 MCP）
     "/app/ext/workshop/list", "/app/ext/workshop/item/{id}", "/app/ext/workshop/raw/{id}",
+    # 🆕 导出 / 快照（P2-0）—— 给 Lily 的 HTTP + 密钥，**不是房间**、不挂 /mcp
+    "/app/ext/archive/info", "/app/ext/archive/db",
+    "/app/ext/archive/jsonl", "/app/ext/archive/files",
 ]
 
 
@@ -107,7 +116,7 @@ def register(relay, public_prefix: str = "/") -> dict:
     返回诊断摘要，调用方（serve.py）打印出来。
     """
     summary = {"ok": False, "schema": None, "owner": None, "sync": None,
-               "routes": None, "gateway": None, "rooms": None,
+               "routes": None, "gateway": None, "rooms": None, "archive": None,
                "warnings": [], "error": None}
 
     if _on("APP_EXT_DISABLED"):
@@ -192,6 +201,19 @@ def register(relay, public_prefix: str = "/") -> dict:
             _step("MCP 门摘要", lambda: rooms.append(_mcp.summary_line()))
             summary["rooms"] = rooms
 
+        # ⑦ 导出 / 快照（P2-0）
+        #    🔴 它**不是房间**：不进 modules/、不挂 /mcp。房间是给 Kael 走的，
+        #       导出是给 Lily 走 HTTP + 密钥的。单独一步，挂了也不带走房间与网关。
+        if _on("APP_EXT_ARCHIVE_DISABLED"):
+            summary["archive"] = "disabled by APP_EXT_ARCHIVE_DISABLED"
+        else:
+            from . import archive as _archive
+
+            def _ar():
+                _archive.install(relay, public_prefix)
+                summary["archive"] = _archive.summary_line()
+            _step("导出端点", _ar)
+
         summary["routes"] = list(_ROUTES)
         summary["ok"] = not summary["warnings"]
 
@@ -217,6 +239,8 @@ def register(relay, public_prefix: str = "/") -> dict:
     print(f"[app_ext] 模型网关就绪 · {summary['gateway']}")
     for line in (summary.get("rooms") or []):
         print(f"[app_ext] {line}")
+    if summary.get("archive"):
+        print(f"[app_ext] {summary['archive']}")
     if summary["warnings"]:
         print(f"[app_ext] ⚠️ {len(summary['warnings'])} 个步骤被跳过（房子照常营业）：")
         for w in summary["warnings"]:

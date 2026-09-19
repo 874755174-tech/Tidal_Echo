@@ -1,0 +1,61 @@
+导出 / 快照验收 —— P2-0
+时间：2026-09-19 13:18:23
+仓库：C:\Users\86187\WorkBuddy\2026-07-26-20-49-33\kael-home
+临时目录：C:\Users\86187\AppData\Local\Temp\kael-archcheck-0t31q1a6
+
+[OK] A1 快照产出了文件，且自报一致
+[OK] A1b 🔴 快照能被**独立** sqlite 打开
+[OK] A2 表名与源一致（不是只拷了主表）
+[OK] A3 🔴 行数与源一致（WAL 里那条也在）
+[OK] A4 `integrity_check` = ok
+[OK] A5 🔴 正文逐字一致（不是「行数对了就行」）
+[OK] A6 🔴 导出之后源库一字未动（只读操作在代码层面也是只读）
+[OK] A7 🔴 WAL + 未 checkpoint 的写入下仍然一致（裸拷在这里就死了）
+[OK] A8 库不存在 → 明确报错（不是静默给个空文件）
+[OK] A9 jsonl 首行是 `_meta`，带生成时间与表清单
+[OK] A10 `_meta` 的表清单 = EXPORT_TABLES ∩ 库里真有的表（本例 = messages/users）
+[OK] A11 🔴 能 grep 到一条已知消息
+[OK] A12 `meta` 列摊开成对象（人能读）
+[OK] A13 🔴 正文恰好长得像 JSON 时**不被摊开**（摊开 = 悄悄改了内容）
+[OK] A14 `users.secret_hash` 不进人读记录
+[OK] A15 `push_subscriptions` 不进人读记录（.db 快照里完整保留）
+[OK] A16 文件抽屉里真有他的东西（arcname 形状 = workshop/…）
+[OK] A17 其中一半目录不存在时也产出**合法** tar.gz（不崩）
+[OK] A18 空目录 → 仍然是合法 tar（0 个条目），不是坏文件
+[OK] B1 info 无密钥 → 401
+[OK] B2 info 有密钥 → 200，三个面都在（db / jsonl / files）
+[OK] B3 /db 无密钥 → 401
+[OK] B4 /db → 200 + attachment + 真正的 SQLite 文件头
+[OK] B5 🔴 **下载下来的那一份**能被独立打开、与源一致、正文在
+[OK] B6 /jsonl 能 grep 到那条已知消息（人可读的那一份真能读）
+[OK] B7 /files → 200 + 合法 gzip+tar，里面真装着工作间与上传
+[OK] B8 🔴 `?token=` → **400**（导出端点有意与房子别处不同：密钥不许拼进 URL）
+[OK] B9 错密钥 → 401
+[OK] B10 🔴 只读：POST /db → 405（这个文件里没有写方法）
+[OK] B11 🔴 导出期间写不受影响（再导一次就把新那条带上了）
+[OK] B12 响应头 no-store / nosniff（导出物不许被中间层留下）
+[OK] B13 临时快照不残留（BackgroundTask 清理）
+[OK] D1 存档页在（web/archive.html）
+[OK] D2 🔴 密钥不进 URL（没有 ?token= 这种写法）
+[OK] D3 下载走 fetch + Blob（URL.createObjectURL + a.download）
+[OK] D4 页面只硬编码 info 一条；其余三个面的路径由后端 `faces` 给（单一真相源）
+[OK] D5 页面上明说「不做导入」（免得她以后找不到而以为漏了）
+[OK] D6 菜单里有 Archive 这一项
+[OK] D7 菜单点 Archive 会去 archive.html
+[OK] D8 🔴 sw.js 的 CACHE 提过版本（不提的话装过的客户端永远看旧壳）
+[OK] D9 实跑：/relay/archive.html 拿得到（200）
+[OK] D10 实跑：页面上就是存档页（没被别的页顶掉）
+[OK] C1 register 摘要里有 archive 这一项
+[OK] C2 `_ROUTES` 里列了四条导出路由
+[OK] C3 逃生开关在（导出可单独关掉）
+[OK] C4 🔴 **只注册 GET**（导出没有写方法 —— 导入明确不做）
+[OK] C5 🔴 不 import mcp / 不碰 KaelLife / 不走网络（它不是房间）
+[OK] C6 install 幂等（第二次什么都不做）
+[OK] C7 四条路由都在 /app/ext/archive/* 下
+[OK] C8 verify_all.py 里接了 archive_check
+[OK] C9 空库上：导出层照样装上（日志说了）
+[OK] C10 空库上：info 200（不是 404）
+[OK] C11 🔴 空库上也能导出（第一次真动库之前，这条路就得能用）
+
+共 53 项，通过 53，失败 0
+总检查：全部通过 ✅

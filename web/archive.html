@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>存档 · The Archive</title>
+
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link href="https://cdn.jsdelivr.net/npm/@fontsource/cormorant-garamond@5/400.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@fontsource/cormorant-garamond@5/500.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@fontsource/cormorant-garamond@5/400-italic.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@fontsource/noto-serif-sc@5/400.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@fontsource/noto-serif-sc@5/500.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@fontsource/pinyon-script@5/400.min.css" rel="stylesheet">
+<meta name="theme-color" content="#F7FAFC">
+
+<script>
+  /* Pearl (light) theme — matches the PWA's default preset. */
+  (function(){ document.documentElement.setAttribute("data-theme","light"); })();
+</script>
+
+<style>
+/* ───────── Pearl Tide · light theme (shared with the PWA / album / workshop) ───────── */
+:root{
+  --font-en:"Cormorant Garamond",Georgia,serif;
+  --font-cn:"Noto Serif SC","Songti SC","STSong","SimSun",serif;
+  --font-script:"Pinyon Script","Cormorant Garamond",cursive;
+
+  --bg:#F7FAFC;
+  --wall:url("chat-light.webp");
+  --text:#253447;
+  --text-soft:#5E7080;
+  --text-faint:#8A99A8;
+  --accent:#4C6378;
+  --accent-deep:#2C4056;
+  --hairline:rgba(120,142,165,.24);
+  --card-line:rgba(150,168,182,.22);
+  --field-bg:rgba(255,255,255,.55);
+  --field-line:rgba(255,255,255,.7);
+  --sheet-bg:rgba(252,253,255,.90);
+  --sheet-line:rgba(255,255,255,.85);
+  --sheet-hi:rgba(255,255,255,.7);
+  --shadow:0 18px 46px rgba(74,93,108,.12);
+  --soft-shadow:0 10px 26px rgba(86,104,118,.10);
+  --scrim:linear-gradient(180deg,rgba(255,255,255,.48),rgba(255,255,255,.16) 32%,rgba(255,255,255,.06) 66%,rgba(255,255,255,.30));
+  --danger:#b06a6f;
+}
+
+*{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html,body{ margin:0; padding:0; }
+body{
+  background:var(--bg); color:var(--text);
+  font-family:var(--font-cn); font-size:15px; line-height:1.6;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  min-height:100vh; overflow-x:hidden;
+}
+.wall{ position:fixed; inset:0; z-index:-2; background:var(--bg) var(--wall) center/cover no-repeat; }
+.wall::after{ content:""; position:absolute; inset:0; background:var(--scrim); }
+button{ font:inherit; color:inherit; cursor:pointer; border:none; background:none; }
+.hidden{ display:none !important; }
+
+.glass{ background:var(--field-bg); border:1px solid var(--field-line);
+  box-shadow:var(--soft-shadow), inset 0 1px 0 var(--sheet-hi);
+  -webkit-backdrop-filter:blur(16px) saturate(1.25); backdrop-filter:blur(16px) saturate(1.25); }
+
+/* ───────── 顶栏 ───────── */
+.bar{
+  position:sticky; top:0; z-index:30; display:flex; align-items:flex-start; gap:6px;
+  padding:calc(8px + env(safe-area-inset-top)) clamp(16px,5vw,28px) 4px;
+  background:linear-gradient(180deg,rgba(247,250,252,.82),rgba(247,250,252,0));
+  -webkit-backdrop-filter:blur(12px) saturate(1.15); backdrop-filter:blur(12px) saturate(1.15);
+}
+.bar .icon{ width:36px; height:36px; margin-top:-3px; margin-left:-7px; display:grid; place-items:center; border-radius:50%;
+  color:var(--text); transition:background .2s,transform .15s; }
+.bar .icon:active{ transform:scale(.9); background:var(--hairline); }
+.bar .icon svg{ width:23px; height:23px; }
+.bar .grow{ flex:1; }
+.top-label{ text-align:right; font-family:var(--font-en); font-size:11.5px; font-weight:500;
+  letter-spacing:.32em; line-height:1.4; color:var(--text-faint); padding-right:2px; }
+.top-label .rule{ display:block; width:28px; height:1px; background:var(--hairline); margin:5px 0 0 auto; }
+
+.wrap{ max-width:560px; margin:0 auto; padding:0 clamp(16px,5vw,28px) calc(22px + env(safe-area-inset-bottom)); position:relative; z-index:1; }
+
+/* ───────── Hero ───────── */
+.hero{ text-align:left; padding:2px 0 6px; }
+.hero h1{ font-family:var(--font-script); font-weight:400; color:var(--text);
+  font-size:clamp(33px,10.6vw,46px); line-height:1; margin:0; }
+.hero .sub{ font-family:var(--font-en); font-style:italic; font-size:clamp(13px,3.8vw,16px);
+  color:var(--text-soft); margin-top:0; letter-spacing:.01em; }
+
+.lead{ font-size:13px; color:var(--text-soft); line-height:1.75; margin:10px 2px 4px; }
+.lead b{ font-weight:500; color:var(--text); }
+
+/* ───────── 三个面：一条一张卡 ───────── */
+.face{ display:flex; align-items:center; gap:12px; padding:13px 14px; border-radius:16px; margin:9px 0; text-align:left; }
+.face .ic{ width:38px; height:38px; flex:0 0 auto; display:grid; place-items:center; border-radius:12px;
+  background:var(--field-bg); border:1px solid var(--field-line); color:var(--accent-deep); }
+.face .ic svg{ width:19px; height:19px; }
+.face .tx{ flex:1; min-width:0; }
+.face .tx .nm{ font-size:14px; color:var(--text); }
+.face .tx .nm small{ font-family:var(--font-en); font-style:italic; font-size:11.5px; color:var(--text-faint);
+  margin-left:6px; letter-spacing:.04em; }
+.face .tx .mt{ font-family:var(--font-en); font-size:11.5px; color:var(--text-faint); letter-spacing:.03em; margin-top:1px; }
+.face .go{ flex:0 0 auto; padding:9px 15px; border-radius:12px; font-size:13px; letter-spacing:.02em;
+  background:var(--accent-deep); color:#fff; transition:transform .15s,opacity .2s; }
+.face .go:active{ transform:scale(.95); }
+.face .go[disabled]{ opacity:.5; }
+
+.note{ font-family:var(--font-cn); font-size:12px; color:var(--text-faint); margin:6px 3px 0; min-height:1em; }
+.note.bad{ color:var(--danger); }
+.note.ok{ color:var(--accent); }
+
+/* ───────── 记录明细 ───────── */
+.sec-head{ display:flex; align-items:baseline; justify-content:space-between; margin:22px 2px 8px; }
+.sec-head h2{ font-family:var(--font-en); font-weight:500; font-size:15px; letter-spacing:.01em; margin:0; color:var(--text); }
+.sec-head .more{ font-family:var(--font-en); font-size:12.5px; font-style:italic; color:var(--text-soft); white-space:nowrap; }
+.sec-head .more:active{ opacity:.6; }
+
+.rows{ padding:11px 15px; border-radius:16px; }
+.rows .r{ display:flex; justify-content:space-between; gap:12px; font-size:13px; padding:4px 0;
+  border-top:1px solid var(--hairline); }
+.rows .r:first-child{ border-top:none; }
+.rows .r span:first-child{ font-family:var(--font-en); letter-spacing:.03em; color:var(--text-soft); }
+.rows .r span:last-child{ color:var(--text); }
+
+.empty{ text-align:center; color:var(--text-soft); padding:30px 20px; }
+.empty .en{ font-family:var(--font-en); font-style:italic; font-size:18px; color:var(--text-faint); }
+.empty p{ font-family:var(--font-cn); font-size:13.5px; margin:8px 0 0; }
+.msg{ color:var(--danger); text-align:center; padding:14px; font-size:13.5px; }
+
+.small{ font-size:12px; color:var(--text-faint); line-height:1.75; margin:16px 2px 0; }
+.small code{ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11.5px; color:var(--text-soft); }
+
+.footer{ text-align:center; padding:34px 0 8px; }
+.footer h3{ font-family:var(--font-script); font-weight:400; font-size:32px; color:var(--text); margin:0; line-height:1; }
+.footer p{ font-family:var(--font-en); font-style:italic; font-size:13.5px; color:var(--text-faint); margin:9px 0 0; letter-spacing:.04em; }
+
+/* gate 门 */
+.gatebox{ background:var(--sheet-bg); border:1px solid var(--sheet-line); border-radius:22px; padding:22px 20px;
+  box-shadow:var(--shadow), inset 0 1px 0 var(--sheet-hi); -webkit-backdrop-filter:blur(20px); backdrop-filter:blur(20px); margin-top:8px; }
+.gatebox p{ font-family:var(--font-cn); font-size:13px; color:var(--text-soft); text-align:center; margin:0 0 14px; line-height:1.6; }
+.gatebox input{ width:100%; padding:11px 14px; border:1px solid var(--field-line); border-radius:12px;
+  background:var(--field-bg); color:var(--text); font-family:var(--font-cn); font-size:14px; outline:none; }
+.gatebox .row{ display:flex; gap:10px; margin-top:14px; }
+.gatebox .row button{ flex:1; padding:12px; border-radius:13px; font-family:var(--font-cn); font-size:14px; transition:transform .15s; }
+.gatebox .row button:active{ transform:scale(.96); }
+.gatebox .row .ghost{ background:var(--field-bg); border:1px solid var(--field-line); color:var(--text-soft); }
+.gatebox .row .send{ background:var(--accent-deep); color:#fff; }
+
+@keyframes popIn{ from{ opacity:0; transform:translateY(10px) scale(.97);} }
+@media (prefers-reduced-motion:reduce){ *{ animation:none !important; } }
+</style>
+</head>
+<body>
+<div class="wall"></div>
+
+<!-- 顶栏 -->
+<div class="bar">
+  <button class="icon" id="topBack" title="返回">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+  </button>
+  <span class="grow"></span>
+  <div class="top-label" id="topLabel">THE<br>ARCHIVE<span class="rule"></span></div>
+</div>
+
+<!-- ════════ 存档 ════════ -->
+<div class="wrap" id="listView">
+  <div class="hero">
+    <h1>The Archive</h1>
+    <div class="sub">take everything of yours and go.</div>
+  </div>
+
+  <p class="lead">
+    这里把她自己的东西<b>整份取走</b>：一份完整快照、一份能读的记录、一个装着他作品的抽屉。
+    <br>🔴 这里<b>只有取出，没有导入</b> —— 导入会覆盖，是丢数据的根因，所以不做。
+  </p>
+
+  <div id="faces"></div>
+  <div class="note" id="facesNote"></div>
+
+  <div class="sec-head">
+    <h2>What's inside</h2>
+    <button class="more" id="reloadBtn">refresh ›</button>
+  </div>
+  <div class="rows glass" id="rows"></div>
+
+  <p class="small" id="where"></p>
+
+  <div class="footer">
+    <h3>The Archive</h3>
+    <p>a copy kept in your own hands</p>
+  </div>
+</div>
+
+<!-- ════════ token 门 ════════ -->
+<div class="wrap gate hidden" id="gateView">
+  <div class="hero" style="padding-top:40px"><h1>The Archive</h1><div class="sub">a copy for your own hands</div></div>
+  <div class="gatebox">
+    <p>没读到访问密钥——先在主页登录，或在此粘贴密钥（与 PWA 同一个）。</p>
+    <input type="text" id="gateInput" placeholder="访问密钥">
+    <div class="row">
+      <button class="ghost" id="gateHome">去主页</button>
+      <button class="send" id="gateSave">保存并进入</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ─────────────────────────────────────────────────────────────
+   The Archive — P2-0「导出 / 快照」的**给人看的那一面**。
+
+   后端（deploy/app_ext/archive.py）提供：
+     GET /relay/app/ext/archive/info    → 能拿走什么（库大小 / 各表行数 / 文件抽屉）
+     GET /relay/app/ext/archive/db      → 完整快照（sqlite3.Connection.backup()，不裸拷）
+     GET /relay/app/ext/archive/jsonl   → 一行一条，能 grep
+     GET /relay/app/ext/archive/files   → tar.gz（工作间产物 + 上传的东西）
+
+   🔴 三条这个页面的死规矩：
+   ① **密钥永不进 URL**（不留 ?token=，不留 <a href>）——
+      四个端点都**只认 Authorization: Bearer**，所以一律 fetch 抓成 Blob 再下载。
+      后端那边更是把 ?token= 直接拒掉（400），两道锁。
+   ② **下载的文件名以后端为准**（读 Content-Disposition），别在页面这边另算一个，
+      否则"她存下来的名字"与"服务器生成的档案"对不上。
+   ③ 这个页面**不做任何写操作** —— 没有上传、没有导入、没有删除。
+   ───────────────────────────────────────────────────────────── */
+const API_BASE = "/relay";
+const LS_KEY = "companion_secret";
+let secret = localStorage.getItem(LS_KEY) || "";
+
+const $ = (id) => document.getElementById(id);
+const views = { list: $("listView"), gate: $("gateView") };
+function show(name){
+  for (const k in views) views[k].classList.toggle("hidden", k !== name);
+  $("topLabel").style.visibility = (name === "list") ? "visible" : "hidden";
+  window.scrollTo(0, 0);
+}
+
+function esc(s){ return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function authHeaders(extra){ return Object.assign({"Authorization": "Bearer " + secret}, extra || {}); }
+function fmtSize(n){
+  const b = Number(n);
+  if (!isFinite(b) || b <= 0) return "—";
+  if (b < 1024) return b + " B";
+  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
+  return (b / 1048576).toFixed(1) + " MB";
+}
+
+async function api(path, opts){
+  const r = await fetch(API_BASE + path, opts || { headers: authHeaders() });
+  if (r.status === 401){ secret = ""; localStorage.removeItem(LS_KEY); show("gate"); throw new Error("401"); }
+  if (!r.ok){
+    let d = "";
+    try { const j = await r.json(); d = j.reason || j.detail || ""; } catch (_) {}
+    throw new Error(d || ("HTTP " + r.status));
+  }
+  return r;
+}
+
+/* 三个面的图标（和内联 SVG 一起用，不额外拉资源） */
+const ICONS = {
+  db:    '<path d="M12 3c4.4 0 8 1.3 8 2.9S16.4 8.8 12 8.8 4 7.5 4 5.9 7.6 3 12 3Z"/><path d="M4 5.9v12.2c0 1.6 3.6 2.9 8 2.9s8-1.3 8-2.9V5.9"/><path d="M4 12c0 1.6 3.6 2.9 8 2.9s8-1.3 8-2.9"/>',
+  jsonl: '<path d="M9 18l-5-6 5-6"/><path d="M15 6l5 6-5 6"/>',
+  files: '<path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h4l1.6 2h7.4a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/><path d="M12 11v5"/><path d="M9.6 13.6 12 16l2.4-2.4"/>',
+};
+
+let INFO = null;
+
+function metaFor(face){
+  if (!INFO) return "";
+  if (face.id === "db"){
+    const t = Object.keys((INFO.db && INFO.db.tables) || {}).length;
+    return fmtSize(INFO.db && INFO.db.bytes) + " · " + t + " tables";
+  }
+  if (face.id === "jsonl"){
+    return "one line per record · greppable";
+  }
+  if (face.id === "files"){
+    const w = (INFO.workshop && INFO.workshop.files) || 0;
+    const u = (INFO.uploads && INFO.uploads.files) || 0;
+    return w + " workshop · " + u + " uploads · " + fmtSize((INFO.workshop && INFO.workshop.bytes || 0) + (INFO.uploads && INFO.uploads.bytes || 0));
+  }
+  return "";
+}
+
+function renderFaces(){
+  const faces = (INFO && INFO.faces) || [];
+  $("faces").innerHTML = faces.map(f => `
+    <div class="face glass" data-face="${esc(f.id)}">
+      <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">${ICONS[f.id] || ICONS.db}</svg></span>
+      <span class="tx">
+        <span class="nm">${esc(f.label)}<small>${esc(f.ext)}</small></span>
+        <span class="mt">${esc(metaFor(f))}</span>
+      </span>
+      <button class="go" data-go="${esc(f.id)}">取走</button>
+    </div>`).join("");
+  for (const b of document.querySelectorAll("[data-go]")){
+    b.onclick = () => grab(b.getAttribute("data-go"), b);
+  }
+}
+
+function renderRows(){
+  const tb = (INFO && INFO.db && INFO.db.tables) || {};
+  const keys = Object.keys(tb);
+  if (!keys.length){
+    $("rows").innerHTML = '<div class="r"><span>tables</span><span>库还没建表</span></div>';
+    return;
+  }
+  $("rows").innerHTML = keys.map(k =>
+    `<div class="r"><span>${esc(k)}</span><span>${esc(String(tb[k]))} 行</span></div>`).join("");
+}
+
+function renderWhere(){
+  if (!INFO) return;
+  const dbp = (INFO.db && INFO.db.path) || "";
+  const ws = (INFO.workshop && INFO.workshop.dir) || "";
+  const up = (INFO.uploads && INFO.uploads.dir) || "";
+  const skipped = INFO.not_included || {};
+  const lines = [];
+  lines.push(`取走的是这些地方的东西：<code>${esc(dbp)}</code> · <code>${esc(ws)}</code> · <code>${esc(up)}</code>`);
+  lines.push(`文件名里的时间是 <b>UTC</b>（+8 才是你那边的时间）。手机上点「取走」会存进「文件」；电脑上直接进下载文件夹。`);
+  if (Object.keys(skipped).length){
+    lines.push(`可读记录里<b>不含</b>：${Object.keys(skipped).map(esc).join(" / ")}（快照里都在）。`);
+  }
+  $("where").innerHTML = lines.join("<br>");
+}
+
+function note(text, kind){
+  const el = $("facesNote");
+  el.className = "note" + (kind ? " " + kind : "");
+  el.textContent = text || "";
+}
+
+function nameFrom(resp, fallback){
+  const cd = resp.headers.get("content-disposition") || "";
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+  return (m && m[1]) ? decodeURIComponent(m[1]) : fallback;
+}
+
+async function grab(id, btn){
+  const face = ((INFO && INFO.faces) || []).find(f => f.id === id);
+  if (!face) return;
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = "取…";
+  note("正在打包，稍等…（导出是只读的，这边在聊天也不会被打断）");
+  try {
+    const r = await api(face.path);
+    const blob = await r.blob();
+    if (!blob.size) throw new Error("拿到的是空文件");
+    const name = nameFrom(r, "kael-home." + (face.ext === "tar.gz" ? "tar.gz" : face.ext));
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name; a.rel = "noopener";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    note("已存下 · " + fmtSize(blob.size) + "（" + name + "）", "ok");
+  } catch (e){
+    note(e.message === "401" ? "密钥不对或已失效，请重新输入。" : ("没取成：" + e.message), "bad");
+  } finally {
+    btn.disabled = false; btn.textContent = old;
+  }
+}
+
+async function loadInfo(){
+  show("list");
+  try {
+    INFO = await (await api("/app/ext/archive/info")).json();
+    renderFaces(); renderRows(); renderWhere();
+    note("");
+  } catch (e){
+    if (e.message === "401") return;
+    note("读不到房子里的档案情况：" + e.message, "bad");
+  }
+}
+
+$("topBack").onclick = () => location.assign("./");
+$("reloadBtn").onclick = loadInfo;
+$("gateHome").onclick = () => location.assign("./");
+$("gateSave").onclick = () => { const v = $("gateInput").value.trim(); if (v){ secret = v; localStorage.setItem(LS_KEY, v); loadInfo(); } };
+
+if (!secret) show("gate"); else loadInfo();
+</script>
+</body>
+</html>

@@ -7,15 +7,20 @@
   3. tools/sessionfallback_check.py 兜底四场景 + 鉴权红线（34 项）
   4. tools/app_ext_check.py         P0 地基：四张表 + 身份层 + 迁移（55 项）
   5. tools/providers_check.py       P1 模型网关：允许列表 + 三格式 + 真 HTTP + 参数下发 + 原始帧诊断 + CoT 透传（166 项）
-  6. tools/jscheck.py               web/ 下各页面（index / album / workshop）内联 JS 语法
+  6. tools/jscheck.py               web/ 下各页面（index / album / workshop / archive）内联 JS 语法
   7. tools/model_ui_check.mjs       设置页模型/参数前端（jsdom 真跑 index.html，35 项）
   8. tools/session_ui_check.mjs     会话归档/删除/改名前端（jsdom 真跑 index.html，40 项）
   9. tools/workshop_check.py        房间层：工作间 + MCP 门（存储 / 注册表 / 真 MCP 客户端 / REST 安全 / 接线）
- 10. git diff -- backend/ examples/ channel/  （红线，必须为空）
+ 10. tools/archive_check.py         P2-0 导出 / 快照（一致快照 / 只读 / 密钥不进 URL / 空库也能导）
+ 11. git diff -- backend/ examples/ channel/  （红线，必须为空）
 
 ⚠️ 跑之前先确认 **8080 端口是空的** —— `tools/secaudit.py` 写死用它起测试服务，
-   被占（比如那个 `kael-probe` 模型探测器还开着）会让 1/9 整套红，
+   被占（比如那个 `kael-probe` 模型探测器还开着）会让 1/10 整套红，
    而且失败信息**不会告诉你是端口冲突**（2026-09-15 吃过这个假红）。
+   （另有 8796/8797 归 archive_check、8798/8799 归 workshop_check，都是自用，不跟 8080 抢。）
+⚠️ 若你的环境设了 `HTTP_PROXY` / `HTTPS_PROXY`：`workshop_check.py` 会自己补
+   `NO_PROXY=127.0.0.1,localhost`（官方 mcp SDK 的 httpx 默认 trust_env，会把本机地址
+   也塞进代理 → 报出来只有一句 `ExceptionGroup`，看着像"门坏了"其实不是；2026-09-19 吃过）。
 
 用法：.venv\\Scripts\\python.exe tools\\verify_all.py
 """
@@ -34,18 +39,19 @@ NODE_MODULES = r"C:\Users\86187\.workbuddy\binaries\node\workspace\node_modules"
 
 # (标签, [可执行文件, 脚本], 额外 env)
 SUITES = [
-    ("1/9  访问控制体检", [PY, "secaudit.py"], {}),
-    ("2/9  会话数据层 + 兜底", [PY, "sessioncheck.py"], {}),
-    ("3/9  兜底四场景 + 鉴权红线", [PY, "sessionfallback_check.py"], {}),
-    ("4/9  P0 地基：四张表 + 身份层", [PY, "app_ext_check.py"], {}),
-    ("5/9  P1 模型网关：允许列表 + 三格式 + 真 HTTP + 参数下发 + 原始帧诊断 + CoT 透传", [PY, "providers_check.py"], {}),
-    ("6/9  web/ 各页面内联 JS 语法", [PY, "jscheck.py"], {}),
-    ("7/9  设置页模型/参数前端（jsdom 真跑）", [NODE, "model_ui_check.mjs"],
+    ("1/10  访问控制体检", [PY, "secaudit.py"], {}),
+    ("2/10  会话数据层 + 兜底", [PY, "sessioncheck.py"], {}),
+    ("3/10  兜底四场景 + 鉴权红线", [PY, "sessionfallback_check.py"], {}),
+    ("4/10  P0 地基：四张表 + 身份层", [PY, "app_ext_check.py"], {}),
+    ("5/10  P1 模型网关：允许列表 + 三格式 + 真 HTTP + 参数下发 + 原始帧诊断 + CoT 透传", [PY, "providers_check.py"], {}),
+    ("6/10  web/ 各页面内联 JS 语法", [PY, "jscheck.py"], {}),
+    ("7/10  设置页模型/参数前端（jsdom 真跑）", [NODE, "model_ui_check.mjs"],
      {"NODE_PATH": NODE_MODULES}),
-    ("8/9  会话归档/删除/改名前端（jsdom 真跑）", [NODE, "session_ui_check.mjs"],
+    ("8/10  会话归档/删除/改名前端（jsdom 真跑）", [NODE, "session_ui_check.mjs"],
      {"NODE_PATH": NODE_MODULES}),
-    ("9/9  房间层：工作间 + MCP 门", [PY, "workshop_check.py"],
+    ("9/10  房间层：工作间 + MCP 门", [PY, "workshop_check.py"],
      {"RELAY_WORKSHOP_DIR": ""}),
+    ("10/10 P2-0 导出 / 快照：一致快照 + 只读 + 密钥不进 URL", [PY, "archive_check.py"], {}),
 ]
 
 fails = []

@@ -2277,6 +2277,12 @@
           <span class="menu-copy"><span class="menu-name">Workshop</span><span class="menu-sub">Things he makes.</span></span>
           <span class="menu-chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></span>
         </button>
+        <button class="menu-item" type="button" data-menu="archive">
+          <span class="menu-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="M7.8 10.2 12 14.4l4.2-4.2"/><path d="M4.5 17.5v1.5a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-1.5"/></svg></span>
+          <span class="menu-dot"></span>
+          <span class="menu-copy"><span class="menu-name">Archive</span><span class="menu-sub">Take it all with you.</span></span>
+          <span class="menu-chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></span>
+        </button>
       </nav>
 
       <!-- footer -->
@@ -2629,6 +2635,7 @@ if (menuPanel){
     if (item.dataset.menu === "chat") closeMenu();       // back to chat
     else if (item.dataset.menu === "album") location.assign("album.html");  // album shell (wire your own backend)
     else if (item.dataset.menu === "workshop") location.assign("workshop.html");  // 他的工作间
+    else if (item.dataset.menu === "archive") location.assign("archive.html");  // 导出 / 快照（只取出，不导入）
     else showToast("即将开放");                           // placeholder items
   });
 }

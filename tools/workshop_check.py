@@ -74,6 +74,8 @@
 ⚠️ 起房子前**必须空出 8798 / 8799**（本套用自己的端口，不跟 secaudit 的 8080 抢）。
 ⚠️ C/D/F 组找文件的路径一律走 `server_workshop(tmp)` —— 别手抄 `tmp/"workshop"`，
    那个假红吃过一次（服务器写 `tmp/house/workshop`，测试去 `tmp/workshop` 找）。
+⚠️ 本套会给自己设 `NO_PROXY=127.0.0.1,localhost`（见常量区注释）：官方 mcp SDK 用的
+   httpx 会把本机地址也塞进代理，报出来只有一句 `ExceptionGroup`，像"门坏了"其实不是。
 
 用法：.venv\\Scripts\\python.exe tools\\workshop_check.py
 """
@@ -113,6 +115,20 @@ SECRET = "test-secret-workshop-0123456789"
 PORT_OK = 8798       # 有数据的库（正常路径）
 PORT_FRESH = 8799    # 全新的库（空 /data 那种）
 PREFIX = "/relay"
+
+# 🔴 本机自测**不许走代理**（2026-09-19 吃过的假红）。
+#    官方 mcp SDK 用的 httpx 默认 `trust_env=True`，会把 `127.0.0.1` 也塞进
+#    `HTTP_PROXY` / `HTTPS_PROXY` → C1 握手直接炸，而报出来只有一句
+#    `ExceptionGroup: unhandled errors in a TaskGroup`（**看不出是代理**）。
+#    ⚠️ 注意这是**测试环境**的问题，不是房子的问题：同一个 env 加上 NO_PROXY
+#       之后本套 121/121 全绿；raw urllib 那几条（C11–C18）本来也不受影响，
+#       因为 urllib 默认就 bypass localhost —— 只有 httpx 需要显式告诉它。
+_no = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+_missing = [h for h in ("127.0.0.1", "localhost") if h not in _no]
+if _missing:
+    _merged = ",".join([p for p in (_no, *_missing) if p])
+    os.environ["NO_PROXY"] = _merged
+    os.environ["no_proxy"] = _merged
 
 results: list = []
 _skipped: list = []

@@ -451,7 +451,68 @@ CORSMiddleware
 `summary` 多一个 `warnings` 字段，`ok = not warnings`。
 `workshop_check.py` 的 E8 组就是这条的回归锁（专门起一个**空库**的房子）。
 
-## `web/index.html`：9 处家装 + 1 处 bug 修复（**唯一被动过的原生文件**）
+## 第八道缝：导出 / 快照（P2-0，2026-09-19）—— **动库之前的那条安全网**
+
+P2（上下文 / stop-retry-reroll / memories 蒸馏）是房子**第一次真动库**。
+动库之前，先得有一条"**她能把自己的东西整份拿走**"的路 —— 这本就是既有硬规则
+「任何迁移 / 升级前先导出备份」的适用场合。**所以它排在 P2 的第一件。**
+
+### 它不是房间（这条最容易搞混）
+
+| | 房间（工作间） | 导出（本道缝） |
+|---|---|---|
+| 给谁 | **给 Kael** 走 MCP 那扇门 | **给 Lily** 走 HTTP + 密钥 |
+| 落点 | `app_ext/modules/*.py`，工具挂 `/mcp` | `app_ext/archive.py`，**不碰 `/mcp`** |
+| 方法 | 有写有读（他能改自己的东西） | **只有 GET** |
+
+一句话：**那扇门是给 Kael 走的，导出是给她走的** —— 别把它挂到门上去。
+
+### 三个面 + 一个诊断
+
+```
+GET /app/ext/archive/info    → 能拿走什么（库大小 / 各表行数 / 文件抽屉 / faces）
+GET /app/ext/archive/db      → 完整快照 .db
+GET /app/ext/archive/jsonl   → 一行一条、能 grep 的人读记录
+GET /app/ext/archive/files   → tar.gz（工作间产物 + 上传的东西）
+```
+
+🔴 **为什么要第三个面**：工作间的产物是**文件树**（一件一个目录），
+`Connection.backup()` 天然拿不到 —— 只做 `.db` 快照就等于
+「备份了，但没备份他做的东西」。这一面是**她拍板加的**（原规格只写了两个面）。
+
+### 🔴 四条技术要点
+
+1. **快照走 `sqlite3.Connection.backup()`，绝不裸拷 `.db`。**
+   WAL 模式下 `cp relay.db` 可能拿到**半截**（尾部还在 `-wal` 里没落盘）→
+   是"备份了却打不开 / 少了一截"的经典死法，**要到真出事那天才发现**。
+   `archive_check.py` 的 A 组**故意把库开成 WAL 并留一条未 checkpoint 的写入**，
+   然后要求：副本能被**另一个连接独立打开**、表名行数与源一致、`integrity_check` = ok。
+2. **源库尽量只读打开**（`mode=ro` 的 URI；WAL 下偶尔失败则退回普通连接，但两种都只读）。
+   顺手断言：导出之后**源库一字未动**。
+3. 🔴 **这个文件只认 `Authorization: Bearer`，并把 `?token=` 关死。**
+   房子别处的 `check_auth`（`backend/app.py:620`）允许 `?token=` ——
+   那是为 `EventSource`（SSE 没法带头）做的妥协，合理。
+   但**下载**最顺手的写法就是 `<a href="…?token=…">`，密钥就进了浏览器历史 / 书签 / Referer
+   和任何中间日志。所以这里 `?token=` 一出现 → **400 `token_in_query_not_allowed`**
+   （明说为什么，不闷掉）。这是**有意与别处不同**的一条差异。
+4. **导出物不许被中间层留下**：响应头 `Cache-Control: no-store` + `X-Content-Type-Options: nosniff`；
+   临时快照落 `tempfile` 目录，响应发完由 `BackgroundTask` 清掉（`archive_check.py` 的 B13 守着）。
+
+### 🔴 导入明确不做
+
+**这个文件里只有 GET**（`archive_check.py` 的 C4 是这条的守门人）。
+理由不是"还没排期"，是**导入覆盖正是 08 月丢数据的根因**，两者风险完全不对称。
+真要做得另开一版，形态只有一种：**只合并不覆盖 + 先预览 + 自动备份**。
+
+### 给人看的那一面
+
+`web/archive.html`（菜单第 8 项 **Archive**）+ `web/sw.js`（`CACHE` v4 → **v5-archive**）。
+下载**一律 `fetch` + `Blob`**（`URL.createObjectURL` + `a.download`），
+**URL 里永不出现密钥**（跟工作间同一条红线，两道锁：页面不写、后端拒收）。
+文件名以**后端**为准（页面读 `Content-Disposition`），避免"她存下来的名字"与
+"服务器生成的档案"对不上。页面里还写着名字里的时间戳是 **UTC**（+8 才是她那边）。
+
+## `web/index.html`：10 处家装 + 1 处 bug 修复（**唯一被动过的原生文件**）
 
 按 Lily 的反馈做的"家装"。
 **全部是 UI、登录体验与提示文案，不含任何 KaelLife 逻辑**，
@@ -470,11 +531,12 @@ CORSMiddleware
 | 7 | 修透明弹层：删除确认框与会话面板**整片透明** | `.confirm-card` / `.session-pop` | 🔴 `--panel-bg` / `--seg-line` **在这个文件里从未定义过** → CSS 属性被整条**静默丢弃**（不报错、控制台无提示）。修法：改成不依赖变量的实色 + 毛玻璃。commit `cad47ce` |
 | 8 | 设置页「模型 / effort / 上下文阈值」三个**假按键接真** + 新增「验证模型名」 | `#modelProvSeg` / `#modelSeg` / `#modelHint` / `#modelProbeRow` + `refreshModelCard()` 系列 | 🆕 P1 收尾（2026-09-15）。原版这 4 个模型按钮是硬编码 `Opus 4.6/4.7/4.8/Fable 5`、点了只换底色，且什么都不存。现在只显示**服务端允许列表**里的东西、选中即落库（见本文 P1 收尾一节） |
 | 9 | 菜单新增第 7 个入口 **Workshop**（点进去 `location.assign("workshop.html")`） | `.menu-list` 里一个新 `.menu-item[data-menu="workshop"]` + 菜单点击回调多一个分支 | 🆕 房间层（2026-09-18）。他的**工作间**要有她这边能推开的门；原版菜单 6 项（Room 是占位），新页面 `web/workshop.html` 是新文件、不改原版 |
+| 10 | 菜单新增第 8 个入口 **Archive**（点进去 `location.assign("archive.html")`） | 同上，多一个 `.menu-item[data-menu="archive"]` + 一个分支 | 🆕 P2-0（2026-09-19）。**她的**导出/快照（不是他的房间）；页面 `web/archive.html` 是新文件、不改原版 |
 | 补丁 | 🔴 **修一个原版就有的会话归属 bug**：在「旧主线 / Desktop 记录」（虚拟会话 `__legacy__`）里发消息，回复会落到别的会话 | 新增 `ensureRealSession()`（`doSend` / `apiSend` 两个发送入口各拦一道）+ 页面级常驻提示条（`#pageNotice` / `LEGACY_NOTICE`，2026-09-14 晚从面板内挪到页面级） | 根因：**会话归属有两份**（前端视图 / 身体全局）→ 详见 `扩展边界.md` §2.5。**这一条是修 bug，不是家装**（唯一一处涉及行为的改动） |
 
 其中 2、3 各是一处常量，改回原值即可；1 是一行 CSS；4、5、6 是新增纯前端函数；
 7 是修一个原版就有的 CSS 变量 bug；8 是 P1 收尾（新增纯前端函数，且**首次把设置页接到真实后端**）；
-9 是房间层（菜单多一项，指到一个新文件）；
+9 是房间层（菜单多一项，指到一个新文件）；10 是 P2-0 导出（同上，也是菜单多一项）；
 **补丁**那条是修一个原版就有的**会话归属 bug**（唯一涉及行为的改动）。
 
 ## 相关文件
@@ -488,9 +550,11 @@ CORSMiddleware
 - `deploy/app_ext/providers.py` · `llm_gateway.py` · `llm_routes.py` — **P1 模型网关**：供应商允许列表 + 三格式适配 + `/app/ext/providers`、`/app/ext/llm/*`（含 **OpenAI 路径别名** `/v1/chat/completions`，通车前置）
 - `deploy/app_ext/mcp.py` — 🆕 **房间层的门**：Streamable HTTP MCP（`/mcp` + 别名 `/app/ext/mcp`），工具注册表 + JSON-RPC 分发；**协议版本回显**、无状态、鉴权 fail-closed
 - `deploy/app_ext/modules/` — 🆕 **房间**：`__init__.py` 写约定，`workshop.py` 是**工作间**（`make_thing`/`revise_thing`/`list_things`/`read_thing` + 展示端点 `/app/ext/workshop/*`）
+- `deploy/app_ext/archive.py` — 🆕 **P2-0 导出 / 快照**：`/app/ext/archive/{info,db,jsonl,files}`，**只读、只有 GET**、`Connection.backup()` 一致快照、只认 Bearer（拒 `?token=`）；**不是房间**
 - `web/workshop.html` — 🆕 工作间的展示页（预览走 `srcdoc`，**密钥不进 URL**）
+- `web/archive.html` — 🆕 导出 / 快照的页面（下载走 fetch + Blob，**密钥不进 URL**；明说「不做导入」）
 - `deploy/zeabur-env.example` — 环境变量清单（哪些必填、哪些别填；**P1 段在最后**）
-- `tools/verify_all.py` — **一次跑完全部验收**（九套 + 红线，exit 0 = 全绿；跑前先确认 8080 空）
+- `tools/verify_all.py` — **一次跑完全部验收**（十套 + 红线，exit 0 = 全绿；跑前先确认 8080 空）
 - `tools/secaudit.py` — 访问控制体检（21 项，不连公网）
 - `tools/sessioncheck.py` — 会话数据层 + 兜底断言（19 项）
 - `tools/sessionfallback_check.py` — 兜底四场景 + 鉴权红线（34 项）
@@ -500,7 +564,11 @@ CORSMiddleware
 - `tools/providers_check.py` — **P1 模型网关验收（166 项：纯逻辑 + 真 HTTP + 端点 + OpenAI 路径别名 + 通车仿真 + 参数下发/effort + CoT 透传 + 红线；自带本地假上游，不需要真 key）**
 - `tools/workshop_check.py` — 🆕 **房间层验收（121 项：工作间存储 / 工具注册表 / 真 MCP 客户端 / REST 与 raw 安全 / 展示页 / 空库回归）**；
   C 组**用官方 mcp SDK 真连**（照 `scheduler.py` 那三行），不是自己造个客户端骗自己
+- `tools/archive_check.py` — 🆕 **P2-0 导出验收（53 项）**：A 组**故意用 WAL + 未 checkpoint 的写入**
+  证明快照不裸拷能自洽（副本独立打开 / 表名行数一致 / 源库一字未动）；B 组走真 HTTP
+  （`?token=` 必须 400、POST 必须 405、导出期间写不受影响、临时快照不残留）；
+  C 组守「只注册 GET / 不 import mcp」；D 组守页面「密钥不进 URL」
 - `tools/model_ui_check.mjs` — 🆕 **设置页模型/参数前端（35 项，jsdom 真跑 `index.html`）**：
   专治"后端接口对、前端逻辑错"这类只有真跑页面才看得见的问题 ——
   假状态、PUT 失败不回滚、以及"拉不到就硬编一个"这三件事各有用例守着
-- `tools/jscheck.py` — 抽出 `web/*.html` 内联 JS 做语法检查（index / album / workshop 全覆盖）
+- `tools/jscheck.py` — 抽出 `web/*.html` 内联 JS 做语法检查（index / album / workshop / archive 全覆盖）
