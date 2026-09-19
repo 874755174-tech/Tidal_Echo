@@ -102,6 +102,21 @@ def _bad_json():
                         status_code=400)
 
 
+def _inject(relay, body: dict) -> dict:
+    """⑧ 上下文管理：把「本会话摘要」插进 `body["messages"]`（就地）。**fail-open**。
+
+    🔴 出任何问题都原样放行 —— 上下文层是"更好用"，不是"能不能说话"的前提。
+    🔴 **只插不删**：热区由身体（`history_n`）决定，网关**不裁历史**
+       （见 `_pick` 里那条备案："网关猜历史 = 两处都以为对方在管"）。
+       落地细节与三条纪律见 `context.py` 顶部。
+    """
+    try:
+        from . import context as C      # 局部导入：模块加载期别互相拉扯
+        return C.apply(relay, body)
+    except Exception as e:              # 有意兜住全部（见上）
+        return {"ok": False, "injected": False, "reason": f"{type(e).__name__}: {e}"}
+
+
 async def _read_json(request) -> dict:
     """读请求体。不是 JSON / 不是对象（数组等）→ 返回 `_BAD`，调用方回 400。"""
     try:
@@ -245,6 +260,7 @@ def install(relay, public_prefix: str = "/") -> None:
     async def _do_complete(body: dict):
         """非流式。body 里的 stream 一律忽略 —— 这个端点的语义就是非流式。"""
         pid, mid = _pick(body)
+        _inject(relay, body)          # ⑧：只插摘要，不裁历史（fail-open，见上面）
         try:
             req = P.normalize_request({**body, "stream": False})
             out = await G.complete(pid, mid, req)
@@ -268,6 +284,7 @@ def install(relay, public_prefix: str = "/") -> None:
     async def _do_chat(body: dict):
         """流式（OpenAI 兼容 SSE）。"""
         pid, mid = _pick(body)
+        _inject(relay, body)          # ⑧：只插摘要，不裁历史（fail-open，见上面）
 
         # 🔴 开流之前把能验的都验完 —— 这时还能回干净的 4xx
         try:

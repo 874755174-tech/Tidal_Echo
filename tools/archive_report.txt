@@ -1,7 +1,7 @@
 导出 / 快照验收 —— P2-0
-时间：2026-09-19 14:09:19
+时间：2026-09-19 15:07:26
 仓库：C:\Users\86187\WorkBuddy\2026-07-26-20-49-33\kael-home
-临时目录：C:\Users\86187\AppData\Local\Temp\kael-archcheck-q17l5h4a
+临时目录：C:\Users\86187\AppData\Local\Temp\kael-archcheck-l41v0o8a
 
 [OK] A1 快照产出了文件，且自报一致
 [OK] A1b 🔴 快照能被**独立** sqlite 打开

@@ -512,6 +512,72 @@ GET /app/ext/archive/files   → tar.gz（工作间产物 + 上传的东西）
 文件名以**后端**为准（页面读 `Content-Disposition`），避免"她存下来的名字"与
 "服务器生成的档案"对不上。页面里还写着名字里的时间戳是 **UTC**（+8 才是她那边）。
 
+## 第九道缝：上下文管理（P2 ⑧，2026-09-19）—— **热区 + 滚动摘要**
+
+规划 §6 的三层记忆，这一道缝管第 ② 层，外加"把它喂进去"这件事：
+
+```
+① 热区原文     最近 N 条逐字        → 身体在管（`history_n`），房子**不动**
+② 滚动摘要     超出热区的压成一段    → 本道缝（写 `sessions.summary`）
+③ 长期记忆     memories 表          → ⑩ 才建
+```
+
+### 🔴 缝在哪：为什么必须落在网关
+
+真正拼上下文的是身体（`examples/api_loop.py:225 build_messages`）：
+
+    [system PERSONA] + 最近 history_n 条 + 当前这条      ← 热区由**身体**决定
+
+而 `examples/` 在**红线目录**里（一个字符都不能改）。所以房子唯一能下手的地方，
+就是身体每次说话**必经**的那个关口 —— 我们伪装成 OpenAI 的那个端点。
+
+### 🔴 三条纪律（都是"别把聊天搞挂"）
+
+1. **fail-open。** 上下文层是"更好用"，不是"能不能说话"的前提。任何异常、任何不确定
+   （认不出会话 / 摘要为空 / 会撑爆 `MAX_SYSTEM_CHARS`）→ **原样放行，一个字段都不改**。
+   ⚠️ 最后那条不是洁癖：撑爆 → `normalize_request` 抛 `too_large` → **400 → 这次说话直接失败**。
+2. **只插不删。** 热区的裁决权在身体；网关**不裁历史**（本模块早先就留了备案：
+   "网关猜历史 = 两处都以为对方在管"）。我们只**多加一条 system 消息**。
+   因为 `providers.normalize_request` 会把所有 system 合成一条，所以下游看到的是
+   `system = PERSONA + "\n\n" + 摘要`，而 `messages` 数组**与没注入时逐字节相同**
+   —— `context_check.py` 的 B4 就是钉这一条的。
+3. **认不出就跳过，不猜。** 网关拿到的是 OpenAI 风格的 body，**里面没有 session_id**
+   （那是身体本地 `uuid4` 生成的）。所以我们用"当前这条用户消息的**原文**"回库里反查
+   它挂在哪个会话上（认的是 **`meta.api_session`**）；**查不到就不注入**。
+   ⚠️ 拿"当前活跃会话"顶上会在切换会话时**张冠李戴** —— 注入别人会话的摘要比不注入坏得多。
+
+### 摘要怎么触发：**手动**（Lily 2026-09-19 拍板）
+
+```
+POST /app/ext/context/summarize   {"session_id":"…","force":false,"dry":false,"keep":…}
+GET  /app/ext/context/status      [?session_id=…]
+```
+
+- 🔴 **房子绝不自己在后台调 LLM 花钱**。什么时候压、压到多紧 = 人说了算。
+- `dry: true` → 只算不写（**不调上游、不写库**）；`force: true` → 越过触发线。
+- ⚠️ **`force` 只越过「触发线」，不越过「热区分界线」**：热区由 `keep` 定，
+  所以 `force` 时若 `keep` 比整段会话还大，结果仍是 `nothing_new_to_fold`（这是对的）。
+  想亲眼看它工作：传 `{"force": true, "keep": 500}`。
+- 阈值取 `settings.context_keep` / `context_trigger`，单位 **token**（**估算**，非真分词）。
+  🔴 这俩字段**在此之前全仓库没人读** —— 前端那个滑块一直只是块装饰；⑧ 起它才真管事。
+
+### 为什么 `sessions` 要加 `summary_upto`（schema v2 → v3）
+
+滚动摘要必须知道"已经压到哪一条"。否则每次压缩都要把全部旧消息重喂一遍 ——
+对话涨到 20 万 token 时，那是一次 20 万的重读 + 重算，**越压越贵**。
+`summary_upto` = 已并入摘要的最大 message id；第二次压就只喂增量。
+（迁移沿用 P0 的写法：`PRAGMA table_info` 看列在不在 → 再 `ALTER`，同一段代码伺候新库老库。）
+
+### 这一套验收的信条：**从出口倒着验**
+
+⑧ 改的是**读法**，最容易得的病叫「**内部都对、出口不对**」：
+函数返回 200、日志正常、摘要也写进库了，可**上游真正收到的那份请求**压根没带上它。
+（P2-0 吃过同款：`iter_jsonl` 每条都对，出去却 18 条粘成 1 行。）
+
+所以 `context_check.py` 的 B 组**起一个假上游，把它收到的 body 原样记下来**，
+然后跟"没注入时的那份"逐字段比。验收自己也被验过：把注入去掉 → B2/B3/B10/C11 红；
+改成"顺手删一条" → **只有 B4 红**；不记 `summary_upto` → C7/C10 红。
+
 ## `web/index.html`：10 处家装 + 1 处 bug 修复（**唯一被动过的原生文件**）
 
 按 Lily 的反馈做的"家装"。
@@ -551,10 +617,11 @@ GET /app/ext/archive/files   → tar.gz（工作间产物 + 上传的东西）
 - `deploy/app_ext/mcp.py` — 🆕 **房间层的门**：Streamable HTTP MCP（`/mcp` + 别名 `/app/ext/mcp`），工具注册表 + JSON-RPC 分发；**协议版本回显**、无状态、鉴权 fail-closed
 - `deploy/app_ext/modules/` — 🆕 **房间**：`__init__.py` 写约定，`workshop.py` 是**工作间**（`make_thing`/`revise_thing`/`list_things`/`read_thing` + 展示端点 `/app/ext/workshop/*`）
 - `deploy/app_ext/archive.py` — 🆕 **P2-0 导出 / 快照**：`/app/ext/archive/{info,db,jsonl,files}`，**只读、只有 GET**、`Connection.backup()` 一致快照、只认 Bearer（拒 `?token=`）；**不是房间**
+- `deploy/app_ext/context.py` — 🆕 **P2 ⑧ 上下文管理**：在网关注入 `sessions.summary`（**只插不删**、fail-open）+ `/app/ext/context/{summarize,status}`（压缩**手动**触发，房子不自己花钱）；**不是房间**
 - `web/workshop.html` — 🆕 工作间的展示页（预览走 `srcdoc`，**密钥不进 URL**）
 - `web/archive.html` — 🆕 导出 / 快照的页面（下载走 fetch + Blob，**密钥不进 URL**；明说「不做导入」）
 - `deploy/zeabur-env.example` — 环境变量清单（哪些必填、哪些别填；**P1 段在最后**）
-- `tools/verify_all.py` — **一次跑完全部验收**（十套 + 红线，exit 0 = 全绿；跑前先确认 8080 空）
+- `tools/verify_all.py` — **一次跑完全部验收**（十一套 + 红线，exit 0 = 全绿；跑前先确认 8080 空）
 - `tools/secaudit.py` — 访问控制体检（21 项，不连公网）
 - `tools/sessioncheck.py` — 会话数据层 + 兜底断言（19 项）
 - `tools/sessionfallback_check.py` — 兜底四场景 + 鉴权红线（34 项）
@@ -572,6 +639,13 @@ GET /app/ext/archive/files   → tar.gz（工作间产物 + 上传的东西）
   这两条是 09-19 补的：原先只做「能 grep 到 / 能 parse」，记录粘成一整行照样全绿；
   真导一份下来才发现 18 条挤成 1 行 17KB，`grep`/`wc -l` 全废。
   **"记录本身合法" ≠ "文件是 JSONL"** —— 验收要**数换行**。
+- `tools/context_check.py` — 🆕 **P2 ⑧ 上下文管理验收（41 项）**：A 组纯逻辑（估算 token /
+  分界线 / 材料措辞）；**B 组起假上游，拿"它真正收到的 body"做断言**（摘要进 system 了吗、
+  人格仍在前面吗、`messages` 是否逐字节不变、有没有串会话、有没有多收字段、流式端点同样注入）；
+  C 组 `summarize` 端点（dry 不写不调、没到阈值一次都不调、`force` 真写、
+  **原文一条不删**、第二次是增量、端到端）；D 组接线 / **v2 老库自动补列** / 开关。
+  ⚠️ 它自带 8800/8801/8802 三个端口，且**先停第一间房子再起第二间**（两个进程抢 SQLite 写锁
+  会产出假红）。
 - `tools/model_ui_check.mjs` — 🆕 **设置页模型/参数前端（35 项，jsdom 真跑 `index.html`）**：
   专治"后端接口对、前端逻辑错"这类只有真跑页面才看得见的问题 ——
   假状态、PUT 失败不回滚、以及"拉不到就硬编一个"这三件事各有用例守着

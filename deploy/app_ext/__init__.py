@@ -26,6 +26,12 @@
     archive.py         **导出 / 快照**：P2 的第一件。只读、只有 GET、不挂 MCP 门
                        （房间给 Kael 走 MCP，导出给 Lily 走 HTTP + 密钥 —— 别混）
 
+    🧠 · 上下文（P2 ⑧，2026-09-19 起）
+    context.py         **上下文管理**：在网关里把 `sessions.summary` 插成一条 system
+                       （**只插不删**、fail-open；热区仍由身体的 `history_n` 说了算）
+                       + `POST /app/ext/context/summarize`（**手动**触发压缩）+ `/status`
+                       🔴 房子**绝不自己在后台调 LLM 花钱**：压不压、何时压 = 人说了算
+
 挂载方式（`deploy/serve.py`）：
 
     import app_ext
@@ -54,6 +60,7 @@
     llm_routes.install  注册 /app/ext/providers + /app/ext/llm/*
     modules.*.install   注册房间（工作间 …）—— 房间自带路由 + MCP 工具
     archive.install     注册 /app/ext/archive/*（P2-0 导出，只读，不是房间）
+    context.install     注册 /app/ext/context/*（P2 ⑧ 上下文管理）
 
 每步都是幂等的，重启 N 次结果一致。
 
@@ -70,6 +77,7 @@
     APP_EXT_LLM_DISABLED=1    只关模型网关（四张表照常）
     APP_EXT_ROOMS_DISABLED=1  只关房间（门与工作间都不挂；四张表与网关照常）
     APP_EXT_ARCHIVE_DISABLED=1 只关导出（四张表 / 网关 / 房间照常）
+    APP_EXT_CONTEXT_DISABLED=1 只关上下文层（注入与端点都不挂，其余照常）
 
 🔴 **「一个房间挂了不带走别的房间」**：每个房间单独 try —— 工作间注册失败时，
    模型网关必须还在、房子必须照常营业。这条和"整个包吞异常"是同一个原则，
@@ -103,6 +111,8 @@ _ROUTES = [
     # 🆕 导出 / 快照（P2-0）—— 给 Lily 的 HTTP + 密钥，**不是房间**、不挂 /mcp
     "/app/ext/archive/info", "/app/ext/archive/db",
     "/app/ext/archive/jsonl", "/app/ext/archive/files",
+    # 🆕 上下文管理（P2 ⑧）—— 摘要压缩要人触发；status 只读
+    "/app/ext/context/summarize", "/app/ext/context/status",
 ]
 
 
@@ -117,7 +127,7 @@ def register(relay, public_prefix: str = "/") -> dict:
     """
     summary = {"ok": False, "schema": None, "owner": None, "sync": None,
                "routes": None, "gateway": None, "rooms": None, "archive": None,
-               "warnings": [], "error": None}
+               "context": None, "warnings": [], "error": None}
 
     if _on("APP_EXT_DISABLED"):
         summary["error"] = "disabled by APP_EXT_DISABLED"
@@ -214,6 +224,19 @@ def register(relay, public_prefix: str = "/") -> dict:
                 summary["archive"] = _archive.summary_line()
             _step("导出端点", _ar)
 
+        # ⑧ 上下文管理（P2 ⑧）
+        #    🔴 它**不裁历史**（热区仍归身体的 `history_n`）：只往 messages 里
+        #       多加一条 system 摘要。挂了 = 少一段摘要，说话照常。
+        if _on("APP_EXT_CONTEXT_DISABLED"):
+            summary["context"] = "disabled by APP_EXT_CONTEXT_DISABLED"
+        else:
+            from . import context as _context
+
+            def _cx():
+                _context.install(relay, public_prefix)
+                summary["context"] = _context.summary_line()
+            _step("上下文管理", _cx)
+
         summary["routes"] = list(_ROUTES)
         summary["ok"] = not summary["warnings"]
 
@@ -241,6 +264,8 @@ def register(relay, public_prefix: str = "/") -> dict:
         print(f"[app_ext] {line}")
     if summary.get("archive"):
         print(f"[app_ext] {summary['archive']}")
+    if summary.get("context"):
+        print(f"[app_ext] {summary['context']}")
     if summary["warnings"]:
         print(f"[app_ext] ⚠️ {len(summary['warnings'])} 个步骤被跳过（房子照常营业）：")
         for w in summary["warnings"]:

@@ -599,8 +599,11 @@ def part_a() -> None:
             DB_PATH = str(db)
 
         rep = S.ensure_schema(OldRelay())
-        chk("㉑b 🔴 v1 老库升级：报出 migrated = settings.provider_id",
-            rep["migrated"] == ["settings.provider_id"], str(rep["migrated"]))
+        # ⚠️ 断言写成"**包含**这一步"而不是"恰好只有这一步"：以后每加一列，
+        #    `migrated` 都会多一项，写死就会把 P1 的验收弄成假红（09-19 加
+        #    `sessions.summary_upto` 时就踩了一次）。这里要守的是"provider_id 那步真的跑了"。
+        chk("㉑b 🔴 v1 老库升级：报出的 migrated 里有 settings.provider_id",
+            "settings.provider_id" in (rep["migrated"] or []), str(rep["migrated"]))
         cols = {r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(settings)")}
         chk("㉑b 🔴 provider_id 列真的落到库里了", "provider_id" in cols, str(sorted(cols)))
         row = sqlite3.connect(db).execute(
@@ -613,8 +616,9 @@ def part_a() -> None:
         rep2 = S.ensure_schema(OldRelay())
         chk("㉑b 🔴 迁移幂等：再跑一次 migrated=[]",
             rep2["migrated"] == [] and rep2["created"] == [], str(rep2["migrated"]))
-        chk("㉑b 版本号推到 2",
-            sqlite3.connect(db).execute("PRAGMA user_version").fetchone()[0] == 2, "")
+        chk("㉑b 版本号推到当前 SCHEMA_VERSION",
+            sqlite3.connect(db).execute("PRAGMA user_version").fetchone()[0]
+            == S.SCHEMA_VERSION, "")
     finally:
         shutil.rmtree(mig, ignore_errors=True)
 
@@ -1138,11 +1142,18 @@ def part_c(tmp: Path) -> None:
         chk("🔴 ㊾ 回归：原版 /app/history 仍 200", st == 200, str(st))
 
         # 迁移是否上了线（schema_report 的字段名是 schema_version，不是 version）
+        # 🔴 **别把版本号写死成某个数字**（原版写的是 2）——
+        #    schema 的 DDL 里写着"以后每加一列 +1"，所以每次加列都会把这条假红一次。
+        #    要守的是"**迁移生效了**"，不是"当前恰好是第 2 版"：
+        #    版本号跟 expected 一致 + up_to_date，这才是不随版本漂移的断言。
         st, d = req(base + "/app/ext/schema", token=SECRET)
-        chk("🔴 schema 版本已到 2（迁移生效）",
-            d.get("schema_version") == 2 and d.get("expected_version") == 2
+        from app_ext import schema as _S
+        chk("🔴 schema 版本已到位（迁移生效 = 跟 SCHEMA_VERSION 一致）",
+            int(d.get("schema_version") or 0) == _S.SCHEMA_VERSION
+            and d.get("expected_version") == _S.SCHEMA_VERSION
             and d.get("up_to_date") is True,
-            f"schema_version={d.get('schema_version')} expected={d.get('expected_version')}")
+            f"schema_version={d.get('schema_version')} expected={d.get('expected_version')} "
+            f"模块常量={_S.SCHEMA_VERSION}")
         chk("🔴 messages 行数未变（2 条种子）+ 四张表齐",
             d.get("messages_rows") == 2 and d.get("tables_ok") is True,
             f"messages={d.get('messages_rows')} tables_ok={d.get('tables_ok')}")

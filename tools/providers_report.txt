@@ -49,12 +49,12 @@ P1 模型网关验收　166/166 通过
 ✅ ⑲ content 是 parts 数组时被拍平
 ✅ ⑳ 选了供应商但模型不配对 → 拒
 ✅ ㉑ 没选供应商 → 放行（P0 行为不变）
-✅ ㉑b 🔴 v1 老库升级：报出 migrated = settings.provider_id
+✅ ㉑b 🔴 v1 老库升级：报出的 migrated 里有 settings.provider_id
 ✅ ㉑b 🔴 provider_id 列真的落到库里了
 ✅ ㉑b 🔴 迁移不丢已有设置（persona / model_id 原样）
 ✅ ㉑b 🔴 迁移不动 messages（1 条老消息还在）
 ✅ ㉑b 🔴 迁移幂等：再跑一次 migrated=[]
-✅ ㉑b 版本号推到 2
+✅ ㉑b 版本号推到当前 SCHEMA_VERSION
 ✅ 58 effort 被 normalize 带进内部格式（不是被静默丢掉）
 ✅ 🔴 59 没配 EFFORT_PARAM → 上游 body 里没有 effort（默认不发）
 ✅ 60 配了 EFFORT_PARAM → 按配置的字段名发出（值原样）
@@ -134,7 +134,7 @@ P1 模型网关验收　166/166 通过
 ✅ 🔴 76 max_frames=1 → 只回 1 帧且标了 truncated
 ✅ 🔴 ㊽ 回归：P0 的 /app/ext/me 仍 200
 ✅ 🔴 ㊾ 回归：原版 /app/history 仍 200
-✅ 🔴 schema 版本已到 2（迁移生效）
+✅ 🔴 schema 版本已到位（迁移生效 = 跟 SCHEMA_VERSION 一致）
 ✅ 🔴 messages 行数未变（2 条种子）+ 四张表齐
 ✅ 🔴 51 别名无密钥 → 401（fail-closed）
 ✅ 🔴 51 少一层 v1 的别名无密钥 → 401

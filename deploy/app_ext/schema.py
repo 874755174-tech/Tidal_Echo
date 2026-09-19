@@ -66,7 +66,9 @@ from typing import Optional
 #
 #   1 → 四张表（P0，2026-09-14）
 #   2 → settings.provider_id（P1 模型网关要"供应商"这个概念，2026-09-14）
-SCHEMA_VERSION = 2
+#   3 → sessions.summary_upto（P2 ⑧ 滚动摘要要知道"已经压到哪条消息了"，
+#       否则每次压缩都要把全部旧消息重新喂一遍 —— 2026-09-19）
+SCHEMA_VERSION = 3
 
 # 四张表的建表语句。
 # ⚠️ 顺序有依赖：users 先建，其余三张都 REFERENCES users(id)。
@@ -110,7 +112,8 @@ DDL_TABLES = [
             title      TEXT,
             since_id   INTEGER DEFAULT 0,
             pinned     INTEGER DEFAULT 0,
-            summary    TEXT,                      -- 滚动摘要写这里（P2）
+            summary    TEXT,                      -- 滚动摘要写这里（P2 ⑧）
+            summary_upto INTEGER DEFAULT 0,       -- 摘要已覆盖到的最大 message id（v3 加）
             archived   INTEGER DEFAULT 0,
             created    TEXT NOT NULL,
             updated    TEXT NOT NULL
@@ -217,11 +220,11 @@ def ensure_schema(relay) -> dict:
 
     返回：
         {
-          "version":      2,
+          "version":      3,
           "created":      ["users", ...],   # 本次新建的表
           "already":      [...],            # 本已存在的表
           "indexes":      [...],            # 本次新建的索引
-          "migrated":     [...],            # 本次补上的列（如 settings.provider_id）
+          "migrated":     [...],            # 本次补上的列（如 sessions.summary_upto）
           "messages_rows": N,               # 建表后 messages 的行数（应与建表前一致）
           "messages_untouched": True,
         }
@@ -247,16 +250,22 @@ def ensure_schema(relay) -> dict:
             conn.execute(ddl)
             made_indexes.append(name)
 
-        # ---- 迁移（v1 → v2）：给老的 settings 补 provider_id ----
+        # ---- 迁移：给老库补上后加的列 ----
         # 🔴 先 `PRAGMA table_info` 看列在不在，再 `ALTER`：
-        #    新库已经由 DDL 建好了这一列，上来就 ALTER 会 "duplicate column name"。
+        #    新库已经由 DDL 建好了这些列，上来就 ALTER 会 "duplicate column name"。
         #    **同一段代码要同时伺候新库和老库** —— 这是幂等的关键。
         #    以后每加一列都在这里补一步，并把 SCHEMA_VERSION +1。
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(settings)")}
         migrated: list = []
-        if "provider_id" not in cols:
-            conn.execute("ALTER TABLE settings ADD COLUMN provider_id TEXT")
-            migrated.append("settings.provider_id")
+        additions = [
+            # (表, 列, 类型/默认值, 版本)
+            ("settings", "provider_id", "TEXT", "v2"),
+            ("sessions", "summary_upto", "INTEGER DEFAULT 0", "v3"),
+        ]
+        for table, col, decl, _ver in additions:
+            cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if col not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+                migrated.append(f"{table}.{col}")
 
         # ---- 红线断言 ----
         after_sig = _messages_signature(conn)

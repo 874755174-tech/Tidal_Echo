@@ -204,18 +204,28 @@ def get_session(relay, session_id: str):
     return d
 
 
-def set_summary(relay, session_id: str, summary: str) -> dict:
-    """写滚动摘要（P2 用）。这是 `sessions` 表**独有**的字段，sync 不会覆盖它。
+def set_summary(relay, session_id: str, summary: str, upto: int = None) -> dict:
+    """写滚动摘要（P2 ⑧ 用）。这是 `sessions` 表**独有**的字段，sync 不会覆盖它。
 
-    现在就把入口留好：P2 实现滚动摘要时，直接调这个，不用再改表。
+    `upto` = 摘要**已覆盖到的最大 message id**（`summary_upto`，schema v3 加的）。
+    🔴 它为什么必需：不记这个的话，每次压缩都要把全部旧消息重新喂一遍 ——
+       对话涨到 20 万 token 时，那是 20 万的重读 + 重算，越压越贵。
+       ⚠️ 传 `None` 时**不动** `summary_upto`（老调用方一行不用改）。
     """
     with _schema.connect(relay) as conn:
         row = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone()
         if not row:
             return {"ok": False, "reason": "not_found"}
-        conn.execute(
-            "UPDATE sessions SET summary = ?, updated = ? WHERE id = ?",
-            (summary, now_iso(), session_id),
-        )
+        if upto is None:
+            conn.execute(
+                "UPDATE sessions SET summary = ?, updated = ? WHERE id = ?",
+                (summary, now_iso(), session_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE sessions SET summary = ?, summary_upto = ?, updated = ? WHERE id = ?",
+                (summary, int(upto or 0), now_iso(), session_id),
+            )
         conn.commit()
-    return {"ok": True, "session_id": session_id, "chars": len(summary or "")}
+    return {"ok": True, "session_id": session_id, "chars": len(summary or ""),
+            "upto": upto}

@@ -1,0 +1,43 @@
+[PASS] A1 估算 token：8 个汉字 = 8
+[PASS] A2 估算 token：8 个拉丁字母 = 2
+[PASS] A3 估算 token：空串 = 0
+[PASS] A4 keep 很大 → 全在热区（boundary=0）
+[PASS] A5 keep=0 → 全可压（boundary=len）
+[PASS] A6 中段切分：keep=35 → 热区 3 条、可压 7 条
+[PASS] A7 🔴 热区 token 真的 ≤ keep（不是大概齐）
+[PASS] A8 注入文本带 MARK（防重复插入的依据）
+[PASS] A9 材料里说话人是「我 / 他」
+[PASS] A10 🔴 压缩提示里有「不许补充/推测」那条红线
+[PASS] B1 🔴 走一次流式端点的非流式分支：200 且上游真收到
+[PASS] B2 🔴 摘要在**上游收到的 system** 里（不是函数返回值里）
+[PASS] B3 🔴 人格在摘要**之前**（顺序 = 人格 → 上下文）
+[PASS] B4 🔴 messages 与没注入时**逐条相同、顺序不变**（只插不删）
+[PASS] B5 🔴 没有摘要 → 上游收到的与发出去的**一模一样**
+[PASS] B6 🔴 库里查不到的文本 → 不注入（**不猜**）
+[PASS] B7 已带 MARK → 不重复插入（MARK 只出现一次）
+[PASS] B8 🔴 上游没多收我们发明的字段（键集合不变）
+[PASS] B9 🔴 别的会话的内容不串味（system 里没有 SID2 的暗号）
+[PASS] B10 流式端点（/llm/chat）同样注入
+[PASS] B11 🔴 会话按 `api_session` 认（SID2 的文本取不到 SID 的摘要）
+[PASS] C1 status 无密钥 → 401/403
+[PASS] C2 status 有密钥 → 200，报出阈值与来源
+[PASS] C3 🔴 dry 只算不写：不调上游、不写摘要
+[PASS] C4 🔴 没到阈值 → 不触发、**一次上游都不调**
+[PASS] C5 🔴 force 真跑：上游被调了，且摘要写进 sessions.summary
+[PASS] C6 压缩时喂进去的是旧消息 + 已有摘要（不是空手要）
+[PASS] C7 `summary_upto` = 最后一条被压消息的 id
+[PASS] C8 🔴 **原文一条不删**（行数与 id 集合都不变）
+[PASS] C9 压缩过程没动 messages 的正文
+[PASS] C10 🔴 第二次是增量：已压过的旧消息不再出现在材料里
+[PASS] C11 端到端：压缩后注入的是**新**摘要
+[PASS] D1 register 摘要里报了上下文层
+[PASS] D2 `_ROUTES` 两条都在
+[PASS] D3 🔴 **不是房间**：context.py 不 import mcp
+[PASS] D4 🔴 原文不删：context.py 里没有对 messages 的写语句
+[PASS] D5 🔴 v2 老库起服务后自动补 `summary_upto` 且 user_version=3
+[PASS] D6 🔴 上一版的 `settings.provider_id` 迁移仍在
+[PASS] D7 逃生开关在（`APP_EXT_CONTEXT_DISABLED`）
+[PASS] D8 verify_all 里接了本套
+[PASS] D9 🔴 关掉开关：说话照常、但**不注入**、上下文端点 404
+
+共 41 项，通过 41，失败 0

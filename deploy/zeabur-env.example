@@ -88,7 +88,21 @@ PROVIDER_RELAY_MODELS=claude-opus-4-6
 # PROVIDERS_DISABLED=       逗号分隔，隐藏某些供应商（例：relay 没配好先关掉）
 # LLM_DEFAULT_PROVIDER=     没设"当前模型"时的默认供应商
 # APP_EXT_LLM_DISABLED=1    只关模型网关（四张表照常）
+# APP_EXT_ROOMS_DISABLED=1  只关房间层（MCP 门 + 工作间都不挂；四张表与网关照常）
+# APP_EXT_ARCHIVE_DISABLED=1 只关导出（四张表 / 网关 / 房间照常）
+# APP_EXT_CONTEXT_DISABLED=1 只关上下文管理（不注入摘要、`/app/ext/context/*` 不挂）
 # APP_EXT_DISABLED=1        整个扩展包关掉（回到 P0 之前）
+#
+# ── 上下文管理（P2 ⑧）的可调项 —— 全都可以不配 ────────────────────────────
+#   阈值（保留多少 / 满多少才压）**不在这里配** —— 它读 settings 表里的
+#   `context_keep` / `context_trigger`（就是设置页那个"上下文"滑块写的字段）。
+#   下面这几个是"滑块没设值时"的兜底与护栏：
+# CONTEXT_DEFAULT_KEEP=8000          settings 没设 keep 时的兜底（token，估算法）
+# CONTEXT_DEFAULT_TRIGGER=12000      settings 没设 trigger 时的兜底（token）
+# CONTEXT_SUMMARY_MAX_CHARS=4000     摘要正文字符上限（它最终会进 system）
+# CONTEXT_SUMMARY_MAX_TOKENS=1500    生成摘要那一次调用的 max_tokens
+#   ⚠️ 摘要**只在被要求时**生成：`POST /app/ext/context/summarize`。
+#      房子不会自己在后台调 LLM 花钱；`GET /app/ext/context/status` 是只读体检。
 #
 # ── 🆕 effort（推理强度）怎么发到上游（2026-09-15 加）──────────────────────
 # 🔴 **默认不发，要发才配。** 设置页那个 effort 分段控件现在会**真的落库**，
