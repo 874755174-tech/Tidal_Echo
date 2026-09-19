@@ -30,8 +30,14 @@ P2-0 已经吃过一次同款的亏：`iter_jsonl` 每条都对，`StreamingResp
      4-6   分界线：keep 很大→全在热区；keep=0→全可压；中段→切分正确
      7     🔴 热区 token 真的 ≤ keep（规则不是"大概齐"）
      8     注入文本带 `MARK`（防重复插入的依据）
-     9     材料里说话人写成「我 / 他」，不是 user / assistant
+     8b    🔴 注入包装语说清"这是你自己的记忆"（不是"系统提示"）
+     9     🔴 材料人称 = **他本人**（out→「我」、in→「你」），不是 user / assistant
+     9b    材料里不出现 user / assistant / 用户
+     9c    材料头部把人称讲明白（不讲，压缩器就自己猜 → 旧版就是这么漂成档案腔的）
      10    🔴 压缩提示里带着"不许补充/推测"那条红线
+     11    🔴 人称规约**写进了系统提示**（只改材料标签模型会漂回去）
+     12    🔴 系统提示点名禁用第三人称档案腔（用户 / 对方 / assistant）
+     13    系统提示禁止写成信件 / 独白 / 对话
 
   B. 注入（起真房子 + 假上游）—— **从出口倒着验**
      1     🔴 200 且上游真收到了请求
@@ -56,6 +62,9 @@ P2-0 已经吃过一次同款的亏：`iter_jsonl` 每条都对，`StreamingResp
      9     init 与压缩都**没碰** messages 行
      10    🔴 第二次是增量：已压过的消息不再喂
      11    端到端：压完 → 再注入 → 上游 system 里是新摘要
+     12    🔴 `rebuild` 的 dry：忽略 `summary_upto`、忽略老摘要（对比 §10 的 0 条）
+     13    🔴 `rebuild` 真跑：**老摘要不被喂回去**、老消息重新进来、摘要被覆盖
+     14    🔴 `rebuild` 之后原文仍然一条没删（"覆盖写"最容易被怀疑丢东西）
 
   D. 接线 / 迁移 / 红线 / 开关
      1     register 摘要含 context；`_ROUTES` 两条都在
@@ -131,6 +140,19 @@ results: list = []
 
 def chk(name: str, ok: bool, detail: str = "") -> None:
     results.append((name, bool(ok), detail))
+
+
+def num(d, key):
+    """取一个数字字段（字段不存在/不是数字 → None）。
+
+    🔴 **别写 `d.get(k) or -1`**：合法的 **0**（比如 `foldable_rows=0`、
+    `prev_summary_chars=0`）是 falsy，会被当成"缺失"→ 断言假红。
+    2026-09-19 真踩（C10/C12 两条红全是这个，被测对象是好的）。
+    """
+    v = (d or {}).get(key)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return int(v)
 
 
 def req(url, *, method="GET", token=None, body=None, timeout=40):
@@ -441,13 +463,25 @@ def part_a() -> None:
     txt = C.inject_text(SUM_SEED)
     chk("A8 注入文本带 MARK（防重复插入的依据）",
         C.MARK in txt and SUM_CANARY in txt, txt[:60])
+    chk("A8b 🔴 注入包装语说清「这是你自己的记忆」",
+        "你自己的记忆" in txt, txt[:60])
 
     mat = C.build_summary_material("", [{"id": 1, "direction": "in", "text": "你好"},
                                         {"id": 2, "direction": "out", "text": "在的"}])
-    chk("A9 材料里说话人是「我 / 他」",
-        "我：你好" in mat and "他：在的" in mat and "assistant" not in mat, mat[:80])
+    chk("A9 🔴 材料人称 = 他本人（out→「我」、in→「你」）",
+        "我：在的" in mat and "你：你好" in mat, mat[:120])
+    chk("A9b 材料里不出现 user / assistant / 用户",
+        "assistant" not in mat and "user" not in mat and "用户" not in mat, mat[:120])
+    chk("A9c 材料头部把人称讲明白（不讲 → 压缩器自己猜 → 旧版漂成档案腔）",
+        "「我」= Kael" in mat and "「你」=" in mat, mat[:80])
     chk("A10 🔴 压缩提示里有「不许补充/推测」那条红线",
         "不许补充" in C.SUMMARY_SYSTEM and "不许推测" in C.SUMMARY_SYSTEM, "")
+    chk("A11 🔴 人称规约**写进了系统提示**（只改材料标签，模型会漂回去）",
+        "「我」指 Kael" in C.SUMMARY_SYSTEM and "「你」指" in C.SUMMARY_SYSTEM, "")
+    chk("A12 🔴 系统提示点名禁用第三人称档案腔",
+        "用户 / 对方 / assistant" in C.SUMMARY_SYSTEM, "")
+    chk("A13 系统提示禁止写成信件 / 独白 / 对话",
+        "信件" in C.SUMMARY_SYSTEM and "独白" in C.SUMMARY_SYSTEM, "")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -573,7 +607,7 @@ def part_c(db: Path) -> None:
         "")
     upto = q1(db, "SELECT summary_upto FROM sessions WHERE id=?", (SID,))
     chk("C7 `summary_upto` = 最后一条被压消息的 id",
-        int(upto or 0) > 0 and int(upto) == int(out.get("upto_id") or -1),
+        int(upto or 0) > 0 and int(upto) == num(out, "upto_id"),
         f"upto={upto} out={out.get('upto_id')}")
 
     ids_after = [r[0] for r in sqlite3.connect(str(db)).execute(
@@ -589,9 +623,45 @@ def part_c(db: Path) -> None:
     st, out = req(CTX_SUM, method="POST", token=SECRET,
                   body={"session_id": SID, "force": True, "keep": 30})
     blob = json.dumps(seen.get("body"), ensure_ascii=False)
-    chk("C10 🔴 第二次是增量：已压过的旧消息不再出现在材料里",
-        st == 200 and out.get("reason") == "nothing_new_to_fold",
-        f"{out.get('reason')} prev_upto={out.get('prev_upto')}")
+    chk("C10 🔴 第二次是增量：已压过的旧消息不再喂（foldable=0）",
+        st == 200 and out.get("reason") == "nothing_new_to_fold"
+        and num(out, "foldable_rows") == 0 and out.get("rebuild") is False,
+        f"{out.get('reason')} fold={out.get('foldable_rows')} "
+        f"prev_upto={out.get('prev_upto')} rebuild={out.get('rebuild')!r}")
+
+    # ⑫ rebuild 的 dry：忽略 summary_upto、也忽略老摘要
+    st, r_dry = req(CTX_SUM, method="POST", token=SECRET,
+                    body={"session_id": SID, "force": True, "keep": 30, "dry": True,
+                          "rebuild": True})
+    # ⚠️ 条数不写死：口径是「重建时 foldable = 热区外的**全部**行」，
+    #    这与 §4 的"没到阈值"、§10 的"增量 0 条"形成对照。
+    chk("C12 🔴 `rebuild` 的 dry：忽略 summary_upto、忽略老摘要"
+        "（foldable = 热区外全部，而增量时是 0）",
+        st == 200 and r_dry.get("rebuild") is True
+        and num(r_dry, "foldable_rows") == num(r_dry, "rows") - num(r_dry, "hot_rows")
+        and num(r_dry, "foldable_rows") > 0
+        and num(r_dry, "prev_summary_chars") == 0,
+        f"fold={r_dry.get('foldable_rows')} rows={r_dry.get('rows')} "
+        f"hot={r_dry.get('hot_rows')} prev_chars={r_dry.get('prev_summary_chars')}")
+
+    # ⑬ rebuild 真跑：老摘要**不进材料**，老消息**重新进来**，摘要被覆盖
+    reset_seen()
+    st, r_new = req(CTX_SUM, method="POST", token=SECRET,
+                    body={"session_id": SID, "force": True, "keep": 30, "rebuild": True})
+    blob2 = json.dumps(seen.get("body"), ensure_ascii=False)
+    chk("C13 🔴 `rebuild` 重压：老摘要**不被喂回去**、老消息重新进来、摘要被覆盖",
+        st == 200 and seen.get("count") == 1
+        and SUM_CANARY not in blob2 and "今天想聊聊盐系手帐风" in blob2
+        and q1(db, "SELECT summary FROM sessions WHERE id=?", (SID,)) == MOCK_REPLY,
+        f"{st} cnt={seen.get('count')} old_in_material={SUM_CANARY in blob2}")
+
+    ids_after2 = [r[0] for r in sqlite3.connect(str(db)).execute(
+        "SELECT id FROM messages ORDER BY id").fetchall()]
+    chk("C14 🔴 `rebuild` 之后原文仍然一条没删（覆盖写最容易被人怀疑丢东西）",
+        ids_after2 == ids_before and len(ids_after2) == n_before
+        and q1(db, "SELECT text FROM messages WHERE id=?", (ids_before[0],))
+        == "今天想聊聊盐系手帐风",
+        f"{n_before} → {len(ids_after2)}")
 
     # ⑪ 端到端：压完 → 再注入 → 上游 system 里是新摘要
     b = base_body(PROBE)

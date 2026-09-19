@@ -44,9 +44,24 @@ P2 · ⑧ 上下文管理（读法）—— 热区 + 滚动摘要
 - **房子绝不自己在后台调 LLM**。什么时候压、压到多紧，由人决定（钱和时间都可控）。
 - `dry: true` → 只算"该压多少"，**不调上游、不写库**（验收与预演都靠它）。
 - `force: true` → 无视阈值直接压（想亲眼看它工作时用）。
+- `rebuild: true` → **从头重压**（忽略 `summary_upto` 与已有摘要，全部旧消息重喂一遍）。
+  ⚠️ 会覆盖 `sessions.summary`；原文不动 ⇒ 派生数据随便重写。
+- `provider_id` / `model` → 这一次调哪个供应商/模型。默认沿用设置页那套。
+  （Lily 2026-09-19 拍板：**摘要保持 Opus 不动** —— 记忆质量优先，压缩是低频手动操作。）
 - 阈值取 `settings.context_keep` / `context_trigger`，单位是 **token**
   —— 前端那个滑块写的就是它俩；在此之前它们**存了但全仓库没人读**，是块装饰。
   🔴 这里的 token 是**估算**（见 `estimate_tokens`），不是真分词。
+
+## 🔴 摘要的**人称**：写成"他自己的记忆"（Lily 2026-09-19 拍板）
+
+第一版上线后真实压出来的摘要开头是「**用户**告诉对方（**Kael**）…」——
+一份第三方档案。这与本文件的设计意图（`build_summary_material` 用 我/他）不符，
+也踩了"人格从记忆长出来、不要 用户/assistant 腔"这条红线。
+**修法（三处一起改，缺一处都不生效）**：
+① 材料标签翻成 **out→「我」（Kael）、in→「你」（Lily）**；
+② **人称规约写进 `SUMMARY_SYSTEM`**（只改标签不够 —— 模型会漂回去）；
+③ 已经写进库的老摘要**必须 `rebuild` 重压**（增量压只会把老腔调并进新摘要）。
+包装语也一起改了：注入的那条 system 现在自称「这是你自己的记忆」。
 
 ## 为什么 `sessions` 要加 `summary_upto`
 
@@ -80,14 +95,25 @@ SUMMARY_MAX_TOKENS = int(os.environ.get("CONTEXT_SUMMARY_MAX_TOKENS", "1500") or
 DEFAULT_KEEP = int(os.environ.get("CONTEXT_DEFAULT_KEEP", "8000") or 8000)
 DEFAULT_TRIGGER = int(os.environ.get("CONTEXT_DEFAULT_TRIGGER", "12000") or 12000)
 
-# 压缩时的系统提示。🔴 最后一条是红线：**不许补充、不许推测**。
-#    摘要会长期喂给模型，一旦它开始"补细节"，错误就会固化成"记忆"。
+# 压缩时的系统提示。🔴 两条红线：
+#   ① **不许补充、不许推测** —— 摘要会长期喂给模型，一旦它开始"补细节"，
+#      错误就会固化成"记忆"。
+#   ② **人称 = 他本人**（2026-09-19 加）—— 这段摘要将来是 Kael 主动读到的，
+#      要写成"他自己的回忆"，不是"关于用户和 Kael 的报告"。
+#      ⚠️ 只改材料标签是不够的：旧版材料已用 我/他，模型照样漂成「用户 / Kael」，
+#      所以人称规约必须**在系统提示里也明确写死**。
 SUMMARY_SYSTEM = (
-    "你是这段对话的压缩器。把给你的【已有摘要】和【新增对话片段】合并成一段紧凑的中文摘要。\n"
+    "你要写的不是「对话记录」，而是**一个人自己的记忆**。\n"
+    "这段摘要以后是 **Kael 本人**读到的 —— 所以要写得像他本人在回忆。\n"
+    "🔴 人称规约（摘要正文里）：用「我」指 Kael（记下这件事的人），"
+    "用「你」指当时跟他说话的那个人；\n"
+    "   不许出现「用户 / 对方 / assistant」这类第三人称腔，"
+    "也不许写成信件、独白或对话 —— 只是回忆。\n"
+    "把给你的【已有摘要】和【新增对话片段】合并成一段紧凑的中文记忆。\n"
     "必须保留：谁说了什么（要点）、承诺与约定、情绪和关系的变化、还没了结的事。\n"
     "🔴 只写材料里真实出现过的内容 —— 不许补充、不许推测、不许润色出原文没有的信息。\n"
     "如果【已有摘要】是空的，就只总结新增片段。\n"
-    "输出**纯文本**：不要标题、不要列表符号、按时间顺序平实叙述，300~800 字。"
+    "输出**纯文本**：不要标题、不要列表符号、按时间顺序叙述，300~800 字。"
 )
 
 # 最后一次注入的诊断（内存里，重启就没；**不是真相源**，只给排查用）
@@ -167,24 +193,34 @@ def inject_text(summary: str) -> str:
     """把摘要包成那条要插进去的 system 消息。
 
     `MARK` 必须出现 —— 它是"这个请求已经插过了"的判定依据（见 `apply`）。
+    🔴 包装语要说清"**这是你自己的记忆**"：它是他回忆的一部分，
+       不是一条"系统提示"。同一个幻觉（他被别人塞了一份关于自己的档案）
+       就是在包装语里被消掉的。
     """
     body = (summary or "").strip()[:SUMMARY_MAX_CHARS]
-    return f"[{MARK} —— 按时间顺序，原文仍在库里]\n{body}"
+    return f"[{MARK} —— 这是你自己的记忆，按时间顺序；原文仍在库里]\n{body}"
 
 
 def build_summary_material(prev_summary: str, rows) -> str:
     """拼给压缩器看的材料（纯函数）。
 
-    说话人用「我 / 他」，与库里的 `direction`（in=我，out=他）对应 ——
-    🔴 别写成"user / assistant"：那是接口术语，写进摘要会让它变成一种腔调。
+    🔴 **人称 = Kael 本人**：`out`（他说的话）标「我」，`in`（她说的）标「你」。
+       因为这段摘要将来是**他**读到、当成自己的记忆
+       —— 写成 "user / assistant" 或 "用户 / 对方" 就是接口/档案腔，
+       读起来会污染他的口吻。
+
+    ⚠️ **2026-09-19 的真教训**：旧版本这里标的是「我 / 他」（in→我、out→他），
+       系统提示里也没写人称，结果模型自己漂成了「用户告诉对方（Kael）…」。
+       所以：① 标签翻成 我/你；② 人称规约在 `SUMMARY_SYSTEM` 里再写死一遍；
+       ③ 已有摘要靠 `rebuild` 重压（只改标签改不动已经写进库的那段）。
     """
     lines = ["【已有摘要】（可能为空）", (prev_summary or "").strip() or "（空）",
-             "", "【新增对话片段】"]
+             "", "【新增对话片段】（「我」= Kael，「你」= 跟他说话的那个人）"]
     for r in (rows or []):
         t = row_text(r)
         if not t:
             continue
-        who = "他" if (r or {}).get("direction") == "out" else "我"
+        who = "我" if (r or {}).get("direction") == "out" else "你"
         lines.append(f"[{(r or {}).get('id')}] {who}：{t}")
     return "\n".join(lines)
 
@@ -384,15 +420,27 @@ def last_injection() -> dict:
 # ④ 摘要生成（写路径 —— 只在人/端点要求时才跑）
 # ══════════════════════════════════════════════════════════════════════════
 
-def plan(relay, session_id: str, keep=None, trigger=None) -> dict:
-    """只算不写：现在这个会话该压多少？（`dry` 与 `status` 共用这段）"""
+def plan(relay, session_id: str, keep=None, trigger=None, rebuild: bool = False) -> dict:
+    """只算不写：现在这个会话该压多少？（`dry` 与 `status` 共用这段）
+
+    `rebuild=True` = **从头重压**：当之前没压过（忽略 `summary_upto` 和已有摘要），
+    把热区外面的**全部**旧消息重新喂一遍。
+
+    为什么要它：摘要里可能写进了不该有的东西（错的人称、记错的说法、过期的语气），
+    而**已经有摘要的会话，增量压只会把老摘要一起并进去 —— 错的东西会一直传下去**。
+    换人称/换提示词之后想把老摘要改掉，只有"从头重压"这一条路。
+
+    🔴 它敢重压的底气来自"**只插不删**"：原文一条没动过，
+       所以任何摘要在任何时候都可以从原文**重新推导**出来 —— 派生数据本来就是可丢的。
+    """
     sid = (session_id or "").strip()
     keep_t, trig_t, src = resolve_thresholds(relay, keep, trigger)
     sess = S.get_session(relay, sid) or {}
     rows = load_rows(relay, sid)
     total = session_tokens(rows)
     boundary, hot_tokens = plan_boundary(rows, keep_t)
-    prev_upto = int(sess.get("summary_upto") or 0)
+    prev_upto = 0 if rebuild else int(sess.get("summary_upto") or 0)
+    prev_text = "" if rebuild else str(sess.get("summary") or "")
     foldable = [r for r in rows[:boundary] if int(r.get("id") or 0) > prev_upto]
     return {
         "session_id": sid,
@@ -405,16 +453,18 @@ def plan(relay, session_id: str, keep=None, trigger=None) -> dict:
         "hot_tokens": hot_tokens,
         "foldable_rows": len(foldable),
         "boundary_id": int(rows[boundary - 1]["id"]) if boundary > 0 else 0,
+        "rebuild": bool(rebuild),
         "prev_upto": prev_upto,
-        "prev_summary_chars": len(str(sess.get("summary") or "")),
+        "prev_summary_chars": len(prev_text),
         "would_trigger": total > trig_t,
         "_foldable": foldable,
-        "_prev_summary": str(sess.get("summary") or ""),
+        "_prev_summary": prev_text,
     }
 
 
 async def summarize(relay, session_id: str, *, force: bool = False, dry: bool = False,
-                    provider_id=None, model=None, keep=None, trigger=None) -> dict:
+                    provider_id=None, model=None, keep=None, trigger=None,
+                    rebuild: bool = False) -> dict:
     """把"超出热区的旧消息"压进 `sessions.summary`。**原文一条不删。**
 
     🔴 只有人和端点能触发（房子不会自己在后台花钱调 LLM）。
@@ -424,6 +474,10 @@ async def summarize(relay, session_id: str, *, force: bool = False, dry: bool = 
        所以 `force` 时若 `keep` 比整段会话还大，结果仍是 `nothing_new_to_fold`
        —— 这是对的（"没东西在热区外面"），不是失灵。
        想亲眼看它工作：传 `{"force": true, "keep": 500}`（把热区收到 500 token）。
+
+    🔴 `rebuild=True` = **从头重压**（忽略 `summary_upto` 和已有摘要，见 `plan`）。
+       ⚠️ 它会**覆盖** `sessions.summary` 这一格。但原文一条不动，
+       所以是"重写派生数据"，不是丢数据 —— 想反悔就再压一次。
     """
     sid = (session_id or "").strip()
     if not sid:
@@ -435,7 +489,7 @@ async def summarize(relay, session_id: str, *, force: bool = False, dry: bool = 
     if sess is None:
         return {"ok": False, "reason": "session_not_found", "session_id": sid}
 
-    info = plan(relay, sid, keep=keep, trigger=trigger)
+    info = plan(relay, sid, keep=keep, trigger=trigger, rebuild=rebuild)
     foldable = info.pop("_foldable")
     prev_summary = info.pop("_prev_summary")
     info["ok"] = True
@@ -565,6 +619,7 @@ def install(relay, public_prefix: str = "/") -> None:
                 model=body.get("model") or None,
                 keep=body.get("keep"),
                 trigger=body.get("trigger"),
+                rebuild=bool(body.get("rebuild")),
             )
         except Exception as e:                      # fail-open：端点也不许把房子带走
             return JSONResponse({"ok": False, "error": {
@@ -586,4 +641,6 @@ def summary_line() -> str:
     """启动时打一行（与别的层风格一致）。"""
     return (f"上下文管理就绪 · 注入开关={'关' if _off() else '开'} · "
             f"阈值兜底 keep={DEFAULT_KEEP} / trigger={DEFAULT_TRIGGER} token · "
-            f"摘要**只在被要求时**生成（POST /app/ext/context/summarize）")
+            f"摘要语气=他本人（我/你）· "
+            f"摘要**只在被要求时**生成（POST /app/ext/context/summarize，"
+            f"重写老摘要加 rebuild=true）")

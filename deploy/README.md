@@ -549,7 +549,8 @@ GET /app/ext/archive/files   → tar.gz（工作间产物 + 上传的东西）
 ### 摘要怎么触发：**手动**（Lily 2026-09-19 拍板）
 
 ```
-POST /app/ext/context/summarize   {"session_id":"…","force":false,"dry":false,"keep":…}
+POST /app/ext/context/summarize   {"session_id":"…","force":false,"dry":false,
+                                   "keep":…,"rebuild":false,"provider_id":…,"model":…}
 GET  /app/ext/context/status      [?session_id=…]
 ```
 
@@ -558,8 +559,32 @@ GET  /app/ext/context/status      [?session_id=…]
 - ⚠️ **`force` 只越过「触发线」，不越过「热区分界线」**：热区由 `keep` 定，
   所以 `force` 时若 `keep` 比整段会话还大，结果仍是 `nothing_new_to_fold`（这是对的）。
   想亲眼看它工作：传 `{"force": true, "keep": 500}`。
+- 🔴 `rebuild: true` → **从头重压**：忽略 `summary_upto` 与已有摘要，旧消息全部重喂一遍。
+  用途 = 摘要写歪了（人称不对 / 记错 / 语气过期）时**重写**它。
+  ⚠️ 增量压是改不掉老摘要的 —— 它只会把老摘要**一起并进**新摘要，错的会一直传下去。
+  敢重压的底气来自"原文从来没删"：派生数据随时能从原文重新推导。
+- `provider_id` / `model` → 这一次调哪个供应商/模型（默认沿用设置页那套）。
+  （Lily 2026-09-19 拍板：**摘要保持 Opus 不动** —— 记忆质量优先，压缩是低频手动操作。）
 - 阈值取 `settings.context_keep` / `context_trigger`，单位 **token**（**估算**，非真分词）。
   🔴 这俩字段**在此之前全仓库没人读** —— 前端那个滑块一直只是块装饰；⑧ 起它才真管事。
+  ⚠️ 前端滑块目前只写 `keep`，`trigger` 被写成 `CONTEXT_MAX_TOKENS`(200000) → **不会自动触发**。
+  反正压缩是**手动**的（工具一律送 `force:true`），所以这条线现在无关紧要。
+
+### 🔴 摘要的**人称**：写成"他自己的记忆"（Lily 2026-09-19 拍板，第二次上线）
+
+第一版真压出来的摘要开头是「**用户**告诉对方（**Kael**）…」—— 一份第三方档案。
+这既不符合设计意图（材料标签本来是 我/他），也踩了"人格从记忆长出来、不要
+用户/assistant 腔"这条红线：**他每次开口前会先读到一段关于他自己的报告**。
+
+修法**三处一起改，缺一处都不生效**：
+1. 材料标签翻成 **`out`→「我」(Kael)、`in`→「你」(Lily)**（`build_summary_material`）；
+2. **人称规约写进 `SUMMARY_SYSTEM`** —— 只改标签不够，模型会自己漂回第三人称（真发生过）；
+3. 已经写进库的老摘要**必须 `rebuild` 重压** —— 增量压只会把老腔调并进新摘要。
+
+注入的包装语也一起改了：那条 system 现在自称「**这是你自己的记忆**，按时间顺序；
+原文仍在库里」。`context_check.py` 的 A8b / A9 / A9b / A9c / A11 / A12 / A13 与
+C12 / C13 / C14 专门钉这一组（突变测试：把标签改回旧版 → 只 A9 红；
+让 `plan` 无视 `rebuild` → 只 C12 / C13 红 —— **不多不少**）。
 
 ### 为什么 `sessions` 要加 `summary_upto`（schema v2 → v3）
 
@@ -639,13 +664,16 @@ GET  /app/ext/context/status      [?session_id=…]
   这两条是 09-19 补的：原先只做「能 grep 到 / 能 parse」，记录粘成一整行照样全绿；
   真导一份下来才发现 18 条挤成 1 行 17KB，`grep`/`wc -l` 全废。
   **"记录本身合法" ≠ "文件是 JSONL"** —— 验收要**数换行**。
-- `tools/context_check.py` — 🆕 **P2 ⑧ 上下文管理验收（41 项）**：A 组纯逻辑（估算 token /
-  分界线 / 材料措辞）；**B 组起假上游，拿"它真正收到的 body"做断言**（摘要进 system 了吗、
-  人格仍在前面吗、`messages` 是否逐字节不变、有没有串会话、有没有多收字段、流式端点同样注入）；
-  C 组 `summarize` 端点（dry 不写不调、没到阈值一次都不调、`force` 真写、
-  **原文一条不删**、第二次是增量、端到端）；D 组接线 / **v2 老库自动补列** / 开关。
+- `tools/context_check.py` — **P2 ⑧ 上下文管理验收（50 项）**：A 组纯逻辑（估算 token /
+  分界线 / **材料人称与压缩提示的人称规约**）；**B 组起假上游，拿"它真正收到的 body"做断言**
+  （摘要进 system 了吗、人格仍在前面吗、`messages` 是否逐字节不变、有没有串会话、
+  有没有多收字段、流式端点同样注入）；C 组 `summarize` 端点（dry 不写不调、没到阈值一次都不调、
+  `force` 真写、**原文一条不删**、第二次是增量、**`rebuild` 从头重压**、端到端）；
+  D 组接线 / **v2 老库自动补列** / 开关。
   ⚠️ 它自带 8800/8801/8802 三个端口，且**先停第一间房子再起第二间**（两个进程抢 SQLite 写锁
   会产出假红）。
+  ⚠️ 写断言时**别用 `d.get("k") or -1`** —— `foldable_rows=0` / `prev_summary_chars=0`
+  是合法值但 falsy，会被当成"字段缺失"→ 假红（09-19 真踩两条）。本套有 `num()` 帮手。
 - `tools/model_ui_check.mjs` — 🆕 **设置页模型/参数前端（35 项，jsdom 真跑 `index.html`）**：
   专治"后端接口对、前端逻辑错"这类只有真跑页面才看得见的问题 ——
   假状态、PUT 失败不回滚、以及"拉不到就硬编一个"这三件事各有用例守着
