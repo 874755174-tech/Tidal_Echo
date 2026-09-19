@@ -407,7 +407,7 @@ CORSMiddleware
 | `deploy/app_ext/modules/__init__.py` | **房间层的约定**：一个房间 = 一个文件 + 一个自己的数据目录 + 一套自己的验收 |
 | `deploy/app_ext/modules/workshop.py` | **第一间房：工作间**（4 个工具 + 3 个展示端点） |
 
-加第二间房（卧室 / 日历）就是再写一个 `modules/xxx.py`，调
+加第二间房（书房 / 日历）就是再写一个 `modules/xxx.py`，调
 `mcp.register_tool(..., room="xxx")` 挂到**同一扇门**上。
 
 ### 工作间：给他一支笔

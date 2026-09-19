@@ -1,5 +1,5 @@
 ==========================================================================
-P1 模型网关验收　145/145 通过
+P1 模型网关验收　166/166 通过
 ==========================================================================
 ✅ 假上游已就绪（127.0.0.1:8794）
 ✅ ① catalog 不含 endpoint（http/https）
@@ -116,7 +116,15 @@ P1 模型网关验收　145/145 通过
 ✅ 🔴 69 raw 无密钥 → 401
 ✅ 🔴 70 raw 流式 200
 ✅ 🔴 70 原样带回 reasoning_content 帧（不解析、不丢）+ 判定路径 A
-✅ 🔴 71 对照：老端点出口帧里没有 reasoning_content（复现断点①）
+✅ 🔴 71 断点①已修：出口帧里**有** reasoning_content（不再静默丢掉）
+✅ 🔴 71 思考链帧里**不带** content 键（下游身体靠这个跳过它）
+✅ 🔴 71 思考链拼起来 = 上游原话，且一个字都没混进正文
+✅ 🔴 71 思考链帧**排在**正文帧之前（保序 = 上游怎么发我们就怎么放）
+✅ 🔴 71b 对照：普通请求出口帧里**没有** reasoning_content（形状不变）
+✅ 🔴 71c 通车仿真：按身体的方式消费出口帧 → 拿到的正好是正文
+✅ 🔴 71d 非流式：message.reasoning_content 也带出来了
+✅ 🔴 71d 非流式：message.content 仍是纯正文
+✅ 🔴 71e 对照：非流式无 CoT 时 message 里没有 reasoning_content 键
 ✅ 🔴 72 认得出内联 <thinking> 且不误判成路径 A
 ✅ 🔴 73 raw 非流式也带回原始 JSON（含 reasoning_content）
 ✅ 🔴 74 响应里没有 key
@@ -146,5 +154,18 @@ P1 模型网关验收　145/145 通过
 ✅ 🔴 67 effort 存了但没配 EFFORT_PARAM → 照样不下发（不猜字段名）
 ✅ 🔴 68 body 不带 model → 用 settings 里选的那个模型
 ✅ 🔴 ㊿ 红线：git diff 为空（backend/examples/channel 零改动）
+✅ 🔴 76a _chunk 只给 text → delta 只有 content（与改前相同）
+✅ 🔴 76b _chunk 只给 reasoning → delta 只有 reasoning_content、**没有 content 键**
+✅ 🔴 76c _chunk 什么都不给（结束帧）→ delta 仍是空对象
+✅ 🔴 76d reasoning 与 content 同帧时，reasoning_content 排在前面
+✅ 🔴 76e openai：delta.reasoning_content 被分类成 reasoning
+✅ 🔴 76f openai：一帧两字段 → 两条都出，且 reasoning 在前
+✅ 🔴 76g anthropic：thinking_delta 被分类成 reasoning（改前是丢掉）
+✅ 🔴 76h gemini：thought=true 的 part 被分类成 reasoning
+✅ 🔴 76i reasoning 别名（reasoning / thinking / reasoning_details）都认
+✅ 🔴 76j parse_stream 遇到 reasoning 帧仍返回 None（与改前一致）
+✅ 🔴 76k parse_stream 一帧两字段时只回正文（不把 CoT 混进正文）
+✅ 🔴 76l parse_complete 仍只回正文（不含思考链）
+✅ 🔴 76m LLM_EXPOSE_REASONING：0=关 / 1=开 / 不配=默认开（可逆）
 ==========================================================================
 全部通过 ✅
