@@ -628,7 +628,8 @@ C12 / C13 / C14 专门钉这一组（突变测试：把标签改回旧版 → �
 
 1. 行数不变　2. 正文各列逐字节不变（`messages_body_signature()` = 除 `meta` 外全部列的 sha256）　3. 只允许 `UPDATE messages SET meta = ?`
 
-越界 → **回滚 + 抛 `RuntimeError("红线被破坏")`**。`SCHEMA_VERSION` **仍是 3**（改的是写入策略，不是表结构）。
+越界 → **回滚 + 抛 `RuntimeError("红线被破坏")`**。⑨ 那次**没有**升版本（改的是写入策略，
+不是表结构）；📌 当前是 **v4**，来自 ⑩-a 的 `memories.source`（见第十一道缝）。
 验收里有一条**故意越界**的用例（`UPDATE messages SET text='HACKED'`）必须被拦下且已回滚。
 
 ### 🔴 停止为什么是"两段式"，以及"温柔掐"
@@ -687,7 +688,7 @@ C12 / C13 / C14 专门钉这一组（突变测试：把标签改回旧版 → �
 **只按 id 认**。因为这里是**留痕**不是**注入** —— "认不出 → 干脆不记"会把要补的洞留回去；
 安全性靠单 Kael（同一时刻只有一次生成在跑）+ 上面那道判别一起兜。
 
-### 验收：`tools/generate_check.py`（第 12 套，71 项）
+### 验收：`tools/generate_check.py`（第 12 套，**82** 项）
 
 A 纯逻辑 19 · B 网关照停（假身体 + 慢上游，**从出口倒着验**）19 · C retry/reroll 17 · D 红线/接线/开关 16。
 
@@ -703,7 +704,114 @@ B 组必须**自己写一个假身体**（照抄 `api_loop.stream_chat` / `run_m
 - **关掉开关的房子：GET 404 但 POST 405**。因为 `web/` 静态目录挂在 `/`，
   Starlette 的 `StaticFiles` 对非 GET/HEAD 一律直接回 405。这是**房子既有行为**，不是 ⑨ 的错。
 
-## `web/index.html`：10 处家装 + 1 处 bug 修复（**唯一被动过的原生文件**）
+## 第十一道缝：记忆层（P2 ⑩-a，2026-09-20）—— **`memories.source` 缝 + 写入路径**
+
+三个端点：`GET /app/ext/memories`（读，`?limit=&source=`）、`POST /app/ext/memories`（写）、
+`GET /app/ext/memories/stats`（计数）。**没有 delete，没有 PUT。**
+
+### 🔴 为什么 ⑩ 被切成 a / b 两半（Lily 2026-09-20 拍板取「乙」）
+
+| | 内容 | 状态 |
+|---|---|---|
+| **⑩-a** | `memories.source`（schema **v3 → v4**）+ 写入路径 | ✅ 本缝 |
+| **⑩-b** | **蒸馏管道**（从对话抽 fact / preference / relationship / event） | ⬜ 下一站 |
+
+理由只有一条，但很硬：**`source` 缝是不可逆的**（**开写之后缝就焊死了，加不上**
+—— 那批记忆会永久"来源不明"），**蒸馏管道是可逆的**（随时能重跑、能改、能推翻）。
+**先把不可逆的焊死，可逆的就不用赶。**
+而且蒸馏那堆板（频率 / 上限 / 写歪了怎么办 / 要不要进 OB）她想先看效果再定，
+塞进同一轮只会把战线拖长。
+
+### 🔴 这一缝最值得记的一条：**`DEFAULT 'chat'` 会伪造来源**
+
+第一版给列写了 `DEFAULT 'chat'`（想着"不传就是 chat，省事"）。冒烟一跑就发现：
+
+    ALTER TABLE memories ADD COLUMN source TEXT DEFAULT 'chat'
+    → **已有行也会报出 'chat'**（SQLite 对老行返回那个默认值，不重写行）
+
+⇒ 那等于把「**这条不知道从哪来**」静默洗成「**这条来自对话**」。
+**这一列存在的全部理由就是不要再伪造来源** —— 结果它成了伪来源的生产器。
+
+现在：**schema 不带 DEFAULT**，默认值住在代码里（`SOURCE_DEFAULT = "chat"`），
+而 `add()` **每次都显式传值**：
+
+| 情况 | 结果 |
+|---|---|
+| 经 `add()` 写入（唯一正常路径） | 永远是**真值** |
+| 迁移前的老行 | **`NULL`** = "不知道"，读的时候保留为 `None`，**不兜底** |
+| 手工 INSERT 忘了带 source | **`NULL`** = 老实话"没标" |
+
+附带好处：**新库建的列**与**老库 `ALTER` 出来的列**行为**完全一致**（都是 NULL）
+→ 测试不必分两条路，也就没有"只在老库上错"的暗坑。
+
+### 🔴 形状锁死，取值不锁死 —— **`kind` 那套不能照抄**
+
+    SOURCE_RE = ^[a-z0-9_-]{1,24}$                # 形状：干净、可索引、能当 URL 参数
+    SOURCES   = {chat, reading, craft, manual}    # 已知取值：**只给文档/页面用，不做闸门**
+
+`kind` 的枚举是**完备**的（fact/preference/relationship/event 就这四类）→
+"未知即归类"是**收敛**的、安全的。
+`source` **恰恰相反**：它的**全部意义就是"以后能多出一种来源"**（书房、xinchao-nian…）。
+把未知值归成 `chat` = 把一条**阅读记忆静默标成对话记忆** —— 那不是校验，是**数据损坏**。
+
+所以规则反过来：**形状非法**才降级成 `chat`，且**如实报** `source_coerced` + `source_raw`（不静默）；
+**形状合法但未知 → 原样存**。
+
+### 🔴 三条边界（有意不做，不是漏了）
+
+1. **不挂 MCP 门** —— 它是"**房子的技术缓存**"，不是"**他的记忆**"（分工表见
+   `memories_store.py` 文件头）。他自己的记忆走 OB 的 `hold`。
+   把这层开给他 = 让他看见自己"**被提炼成什么样**" —— 那是被生成的，不是他写的。
+2. **没有 delete** —— `memories_store.py` 里没有 `delete` 函数，**结构性**的：
+   一旦存在，它就会在某天被某个"清理逻辑"顺手调用（同「不造一颗会痛苦的心」）。
+3. **`salience` 永不外泄** —— 内部权重（跟"想念度数值不做"同源）。
+   写入**可以**传，但任何响应都不回；所有响应过 `public()` 那张白名单投影。
+
+### ⚠️ 迁移会让**列顺序**不同（不是 bug，但要知道）
+
+`ALTER TABLE ADD COLUMN` 只会把列**追加在末尾**，而新库是照 DDL 的位置建的
+⇒ 老库的 `source` 在最后一列、新库的在 `source_msg` 后面。
+所以验收比的是**列集合**，并**额外证明代码不依赖顺序**
+（`INSERT INTO memories` 一律带列名；`SELECT *` 的结果按 `dict()` 取，从不位置解包）。
+
+### 验收：`tools/memory_check.py`（第 13 套，87 项）
+
+A store 层 30 · B 迁移 v3→v4（**真造一个 v3 老库来升**）19 · C 端点 23 · D 红线/接线/开关 15。
+
+- **B 组是这一套的重点**：手工造一个 v3 形状的库（把 DDL 里 `source` 那行摘掉）
+  + 一条老记忆 + 两条 `messages`，再跑 `ensure_schema()` 升上来 ——
+  然后验：老行**还在**、正文**一个字没改**、新列是 **NULL**、`messages` 的 DDL **逐字未变**、
+  行数未变、幂等（第二次 `migrated` 为空）。
+- **C 组不起端口**（进程内 ASGI TestClient）→ 不跟别的套抢端口，也不用等启动。
+- 🔴 **`salience` 的断言是字符串级的**：直接检查响应体里有没有这个词，而不是
+  "字段是不是 None"（后者会被 `null` 骗过）。
+
+### ⚠️ 三个自己踩的坑（都写进验收里了）
+
+1. **`q()` 不能拿来写库** —— 那个帮手在 `finally` 里关连接、**没 commit = 回滚**
+   → "插进去了又查不到"（B19 假红）。所以另有一个 `w()` 专管写。
+2. **`from app_ext import __init__ as AE` 是错的** —— 包上的 `__init__` 是模块的
+   特方法（method-wrapper），不是 `__init__.py` 那个模块。
+   `app_ext/__init__.py` **就是**模块 `app_ext`，直接 `import app_ext as AE`。
+3. **别拿整段 JSON 做子串比对** —— A30 一开始断言"响应里不含 `salience`"，
+   结果**测试数据自己的正文**里就写着"salience 夹紧" → 假红。
+   改成检查**键名集合**（`keys == {"kind","text"}`）。
+   📌 **断言的比对面要跟它想守的那件事对齐**：想守的是"投影里没这个**字段**"，
+   就该比键名，不该比整串文本。
+
+### ⚠️ 顺带发现的两处（**没改**，报备）
+
+- **设置页的"上下文用量"是写死的假数字**：`web/index.html` 的
+  `apiContextStatus()` 至今返回 `{usage_tokens: 96000, threshold_k:"200k", active_sid:"demo-session"}`，
+  `apiContextAction()` 返回假 ok —— 都是原版 Tidal_Echo 的占位实现。
+  **⑧ 的真端点 `/app/ext/context/status` 前端没接。**
+  这意味着界面上那个"96k / 200k"**不是真的**，别拿它做判断。
+- **`usage` 一处都没落盘**：网关 `_pick_usage()` 把上游的 `usage` 从流里捡出来了，
+  但只塞进 SSE 帧就没了 —— 没有任何表 / 日志存它。
+  ⇒ 我们现在**看不到 token 消耗，更看不到缓存命中**（见「相关文件」里那条待办）。
+
+## `web/index.html`：12 处家装 + 1 处 bug 修复（**唯一被动过的原生文件**）
+
 
 按 Lily 的反馈做的"家装"。
 **全部是 UI、登录体验与提示文案，不含任何 KaelLife 逻辑**，
@@ -723,11 +831,21 @@ B 组必须**自己写一个假身体**（照抄 `api_loop.stream_chat` / `run_m
 | 8 | 设置页「模型 / effort / 上下文阈值」三个**假按键接真** + 新增「验证模型名」 | `#modelProvSeg` / `#modelSeg` / `#modelHint` / `#modelProbeRow` + `refreshModelCard()` 系列 | 🆕 P1 收尾（2026-09-15）。原版这 4 个模型按钮是硬编码 `Opus 4.6/4.7/4.8/Fable 5`、点了只换底色，且什么都不存。现在只显示**服务端允许列表**里的东西、选中即落库（见本文 P1 收尾一节） |
 | 9 | 菜单新增第 7 个入口 **Workshop**（点进去 `location.assign("workshop.html")`） | `.menu-list` 里一个新 `.menu-item[data-menu="workshop"]` + 菜单点击回调多一个分支 | 🆕 房间层（2026-09-18）。他的**工作间**要有她这边能推开的门；原版菜单 6 项（Room 是占位），新页面 `web/workshop.html` 是新文件、不改原版 |
 | 10 | 菜单新增第 8 个入口 **Archive**（点进去 `location.assign("archive.html")`） | 同上，多一个 `.menu-item[data-menu="archive"]` + 一个分支 | 🆕 P2-0（2026-09-19）。**她的**导出/快照（不是他的房间）；页面 `web/archive.html` 是新文件、不改原版 |
+| 11 | 生成中在发送键左边多一个**停止键**（方块），只在"正在生成"时出现 | `#stopBtn`（新增）+ `.floatbtn.stop` + `syncGenControls()` / `genActive()` / `doStop()` | 🆕 P2 ⑨（2026-09-19）。判据 = 身体推了 typing **或**屏幕上还有没落库的流式草稿。点下去**两步都做**：先本地立刻收草稿（手感是"立刻停"）→ 再 `POST /app/ext/generate/stop` 掐上游（**钱在这儿**；只做前者屏幕上还会继续冒字，只做后者手感会顿） |
+| 12 | 长按**最后一条回复**，菜单里多出「重答」与「换一版 `i/n`」 | `#msg-menu-actions` 里两个新按钮 + `replyChains()` / `doRetry()` / `doCycleVariant()` / `hiddenVariantKeys()` | 🆕 P2 ⑨（2026-09-19）。版本链**严格以 `meta.superseded` 为判据**，不是"两条挨着的 ai/reply"（**他一次完全可以正常说两句**，那种必须都显示）。链与"在看第几版"全从 `sortedMessages()` 推 → 刷新/换设备都认得出来；翻版本只改"哪一条进渲染"（`buildVirtualRows` 的 hide 集合），**不动库、不改正文、不删任何一条**。⚠️ 设计稿原写"气泡上一个 `‹1/3›` 小切换器"，实际放进长按菜单：气泡是虚列表渲染的，往上加控件要动 `virtualRowSignature` / 节点缓存那套"丝滑命根"，风险大得多 |
 | 补丁 | 🔴 **修一个原版就有的会话归属 bug**：在「旧主线 / Desktop 记录」（虚拟会话 `__legacy__`）里发消息，回复会落到别的会话 | 新增 `ensureRealSession()`（`doSend` / `apiSend` 两个发送入口各拦一道）+ 页面级常驻提示条（`#pageNotice` / `LEGACY_NOTICE`，2026-09-14 晚从面板内挪到页面级） | 根因：**会话归属有两份**（前端视图 / 身体全局）→ 详见 `扩展边界.md` §2.5。**这一条是修 bug，不是家装**（唯一一处涉及行为的改动） |
 
 其中 2、3 各是一处常量，改回原值即可；1 是一行 CSS；4、5、6 是新增纯前端函数；
 7 是修一个原版就有的 CSS 变量 bug；8 是 P1 收尾（新增纯前端函数，且**首次把设置页接到真实后端**）；
 9 是房间层（菜单多一项，指到一个新文件）；10 是 P2-0 导出（同上，也是菜单多一项）；
+11、12 是 P2 ⑨（停止键 + 长按菜单里的重答/翻版本，都是纯前端交互，
+**消息正文一个字不动**，翻版本只改"哪一条进渲染"）；
+**补丁**那条是修一个原版就有的**会话归属 bug**（唯一涉及行为的改动）。
+
+> ⚠️ **⑨ 那次提交（`75debdc`）漏了把 11、12 两行写进这张表**（只加了第十道缝）。
+> 2026-09-20 补上。📌 **教训：加"家装"必须同时改三个地方** ——
+> 表里加一行、下面这段编号说明、以及本节的"**N 处家装**"标题数字。
+> 漏一处的表现是"文档说 10 处、代码有 12 处"，而**没人会去数**。
 **补丁**那条是修一个原版就有的**会话归属 bug**（唯一涉及行为的改动）。
 
 ## 相关文件
@@ -743,10 +861,14 @@ B 组必须**自己写一个假身体**（照抄 `api_loop.stream_chat` / `run_m
 - `deploy/app_ext/modules/` — 🆕 **房间**：`__init__.py` 写约定，`workshop.py` 是**工作间**（`make_thing`/`revise_thing`/`list_things`/`read_thing` + 展示端点 `/app/ext/workshop/*`）
 - `deploy/app_ext/archive.py` — 🆕 **P2-0 导出 / 快照**：`/app/ext/archive/{info,db,jsonl,files}`，**只读、只有 GET**、`Connection.backup()` 一致快照、只认 Bearer（拒 `?token=`）；**不是房间**
 - `deploy/app_ext/context.py` — 🆕 **P2 ⑧ 上下文管理**：在网关注入 `sessions.summary`（**只插不删**、fail-open）+ `/app/ext/context/{summarize,status}`（压缩**手动**触发，房子不自己花钱）；**不是房间**
+- `deploy/app_ext/generate.py` — 🆕 **P2 ⑨ 停止 / 重答 / 多版本**：`/app/ext/generate/{stop,retry,reroll,status}`；真"停住"的收尾在 `llm_routes` 的停止检查点；写 `messages` **只写 `meta`**；**不是房间**
+- `deploy/app_ext/memory.py` · `memories_store.py` — 🆕 **P2 ⑩-a 记忆层**：`memories.source` 缝（schema **v4**）+ `GET/POST /app/ext/memories` + `/stats`；🔴 **无 delete、`salience` 永不外泄、不挂 MCP 门**（它是"房子的技术缓存"，不是"他的记忆"）；**不是房间**
+- 🔴 **待办（省钱方向，尚未做）**：**`usage` 一处都没落盘**。网关 `llm_gateway._pick_usage()` 把上游的 `usage` 从流里捡出来了，但只塞进 SSE 帧就没了 —— 没有任何表 / 日志存它。⇒ 现在**看不到 token 消耗，也看不到缓存命中**（各站字段名不同：`prompt_cache_hit_tokens` / `cache_read_input_tokens`…）。要做"缓存命中率"任何决策，**先得有这个数**；顺序上它排在 ⑩-b 之后（⑩-b 会改"发什么给模型"，前缀一变缓存策略就得跟着变）
 - `web/workshop.html` — 🆕 工作间的展示页（预览走 `srcdoc`，**密钥不进 URL**）
 - `web/archive.html` — 🆕 导出 / 快照的页面（下载走 fetch + Blob，**密钥不进 URL**；明说「不做导入」）
 - `deploy/zeabur-env.example` — 环境变量清单（哪些必填、哪些别填；**P1 段在最后**）
-- `tools/verify_all.py` — **一次跑完全部验收**（十一套 + 红线，exit 0 = 全绿；跑前先确认 8080 空）
+- `tools/verify_all.py` — **一次跑完全部验收**（**十三套 + 红线**，exit 0 = 全绿；
+  跑前先确认 8080 空；**全量约 1m40s，别用短的超时掐它**）
 - `tools/secaudit.py` — 访问控制体检（21 项，不连公网）
 - `tools/sessioncheck.py` — 会话数据层 + 兜底断言（19 项）
 - `tools/sessionfallback_check.py` — 兜底四场景 + 鉴权红线（34 项）
@@ -774,6 +896,22 @@ B 组必须**自己写一个假身体**（照抄 `api_loop.stream_chat` / `run_m
   会产出假红）。
   ⚠️ 写断言时**别用 `d.get("k") or -1`** —— `foldable_rows=0` / `prev_summary_chars=0`
   是合法值但 falsy，会被当成"字段缺失"→ 假红（09-19 真踩两条）。本套有 `num()` 帮手。
+- `tools/generate_check.py` — **P2 ⑨ 停止/重答/多版本验收（82 项）**：A 纯逻辑 19 ·
+  B 网关照停（**假身体 + 慢上游，从出口倒着验**）19 · C retry/reroll 17 · D 红线/接线/开关 16。
+  B 组必须**自己写一个假身体**（照抄 `api_loop.stream_chat` / `run_model` 的形状，
+  **含 fallback 那段**），因为"停止变成偷偷换模型重跑"这个病**只会在身体那一侧显形**；
+  断言打在**上游被调用的次数**上。
+  ⚠️ 它的 `D9` 把 `SCHEMA_VERSION` **写死** —— 那是**有意**的，守"没人偷偷动表结构"。
+  有意升级 schema 时就来回改这一行（09-20 ⑩-a 把它从 3 改成 4）。
+- `tools/memory_check.py` — **P2 ⑩-a 记忆层验收（87 项）**：A store 层 30 ·
+  B 迁移 v3→v4（**真造一个 v3 老库来升**）19 · C 端点 23 · D 红线/接线/开关 15。
+  🔴 B 组是重点：手工造 v3 形状的库（把 DDL 里 `source` 那行摘掉）+ 一条老记忆
+  + 两条 `messages`，跑 `ensure_schema()` 升上来，再验老行**还在**、正文**一个字没改**、
+  新列是 **NULL**（**不是 `'chat'`** —— 带 `DEFAULT` 会伪造来源）、`messages` 的 DDL
+  **逐字未变**、幂等。
+  ⚠️ 它**不起端口**（进程内 ASGI TestClient）→ 不跟别的套抢端口。
+  ⚠️ 断言的比对面要跟它想守的事对齐：守"投影里没这个**字段**"就该比**键名集合**，
+  别比整段 JSON —— 测试数据自己的正文里可能就有那个词（A30 真踩过）。
 - `tools/model_ui_check.mjs` — 🆕 **设置页模型/参数前端（35 项，jsdom 真跑 `index.html`）**：
   专治"后端接口对、前端逻辑错"这类只有真跑页面才看得见的问题 ——
   假状态、PUT 失败不回滚、以及"拉不到就硬编一个"这三件事各有用例守着

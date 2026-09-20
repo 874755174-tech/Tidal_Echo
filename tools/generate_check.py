@@ -75,7 +75,8 @@ r"""
      4     🔴 源码里没有 DELETE / DROP / ALTER 打 messages 的写法
      5-6   🔴 `_meta_guard` 挡住改正文，且被拦后已回滚
      7-8   🔴 只写 meta 被允许；且**不动正文指纹**（真比对）
-     9     schema 版本没被这次改动顶掉（仍是 3）
+     9     schema 版本 = 4（⑩-a 的 `memories.source`）—— 写死是有意的，
+           守"没人偷偷动表结构"；有意升级就来改这一行
      10    逃生开关在
      11    verify_all 已接本套
      12-14 启动日志里有 ⑨ 那行；🔴 整段日志 + `summary_line()` 都 **GBK 安全**
@@ -1102,8 +1103,13 @@ def part_d(tmp: Path, log_path: Path) -> None:
         and msgs(db)[0]["meta"].get("truncated") is True, "")
     chk("D8 🔴 只写 meta **不动正文指纹**（真比对，不是自比）",
         _body_sig() == sig_before, f"{sig_before[:16]} → {_body_sig()[:16]}")
-    chk("D9 schema 版本没被这次改动顶掉（仍是 3）",
-        _sch.SCHEMA_VERSION == 3, f"={_sch.SCHEMA_VERSION}")
+    # 🔴 这个数字**有意写死**：它守的是"**没有人偷偷动表结构**"。
+    #    将来谁**有意**改了表结构，就来把这里的期望值改掉，并在 commit message 里说明
+    #    —— 一次有意的版本升级要留下一次有意的改动记录。
+    #    ⚠️ 2026-09-20：⑩-a 给 `memories` 加 `source` → 3 → 4，本行随之更新
+    #       （这是"有意升级"的正常流程，不是本套坏了）。
+    chk("D9 schema 版本 = 4（⑩-a 的 memories.source；有意升级就来改这里）",
+        _sch.SCHEMA_VERSION == 4, f"={_sch.SCHEMA_VERSION}")
     chk("D10 逃生开关在（APP_EXT_GENERATE_DISABLED）",
         "APP_EXT_GENERATE_DISABLED" in init_src
         and "APP_EXT_GENERATE_DISABLED" in src, "")

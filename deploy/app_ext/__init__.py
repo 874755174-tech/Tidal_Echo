@@ -41,6 +41,16 @@
                        🔴 真"停住"的收尾在 `llm_routes._gen()` 的 stop 检查点里
                           （温柔掐：补正常的 finish=stop + [DONE]；断流会让身体换模型重跑）
 
+    🧩 · 记忆层（P2 ⑩-a，2026-09-20 起）
+    memory.py          **`memories` 表 + `source` 缝 + 写入路径**（schema v3 → v4）
+                       + `GET/POST /app/ext/memories` + `GET /app/ext/memories/stats`
+                       🔴 它是"房子的技术缓存"，**不是他的记忆** → **不挂 MCP 门**；
+                          他自己的记忆走 OB 的 `hold`。这是**有意不做**，不是漏了
+                       🔴 **没有 delete**（让"删记忆"在代码层面不存在）
+                       🔴 `salience` **永不外泄**（走 `memories_store.public()` 投影）
+                       ⬜ ⑩-b 蒸馏管道还没做 —— 而且**房子不自己在后台调 LLM 花钱**，
+                          所以它将来也必须是**人/动作触发**
+
 挂载方式（`deploy/serve.py`）：
 
     import app_ext
@@ -62,7 +72,8 @@
 
 ## 幂等与顺序
 
-    ensure_schema       建表 + 迁移（v1 → v2 补 settings.provider_id）
+    ensure_schema       建表 + 迁移（v2 补 settings.provider_id · v3 补 sessions.summary_upto
+                        · v4 补 memories.source）
     ensure_owner        users 表空 → 播种房主（有则不动作）
     sync_from_messages  把已有会话投影进 sessions（有则更新投影字段，不碰 summary）
     identity.install    注册 /app/ext/* 身份与设置端点
@@ -71,6 +82,7 @@
     archive.install     注册 /app/ext/archive/*（P2-0 导出，只读，不是房间）
     context.install     注册 /app/ext/context/*（P2 ⑧ 上下文管理）
     generate.install    注册 /app/ext/generate/*（P2 ⑨ 停止/重答/多版本）
+    memory.install      注册 /app/ext/memories*（P2 ⑩-a 记忆层，不是房间）
 
 每步都是幂等的，重启 N 次结果一致。
 
@@ -89,6 +101,7 @@
     APP_EXT_ARCHIVE_DISABLED=1 只关导出（四张表 / 网关 / 房间照常）
     APP_EXT_CONTEXT_DISABLED=1 只关上下文层（注入与端点都不挂，其余照常）
     APP_EXT_GENERATE_DISABLED=1 只关 ⑨（网关的停止检查点也一起失效，一切照旧）
+    APP_EXT_MEMORY_DISABLED=1 只关 ⑩-a 的端点（表与 source 缝照常，只是读写端点不挂）
 
 🔴 **「一个房间挂了不带走别的房间」**：每个房间单独 try —— 工作间注册失败时，
    模型网关必须还在、房子必须照常营业。这条和"整个包吞异常"是同一个原则，
@@ -127,6 +140,8 @@ _ROUTES = [
     # 🆕 停止 / 重答 / 多版本（P2 ⑨）—— 只做最后一条回复
     "/app/ext/generate/stop", "/app/ext/generate/retry",
     "/app/ext/generate/reroll", "/app/ext/generate/status",
+    # 🆕 记忆层（P2 ⑩-a）—— 房子的技术缓存，**不挂 /mcp**、**没有 delete**
+    "/app/ext/memories", "/app/ext/memories/stats",
 ]
 
 
@@ -141,7 +156,8 @@ def register(relay, public_prefix: str = "/") -> dict:
     """
     summary = {"ok": False, "schema": None, "owner": None, "sync": None,
                "routes": None, "gateway": None, "rooms": None, "archive": None,
-               "context": None, "generate": None, "warnings": [], "error": None}
+               "context": None, "generate": None, "memory": None,
+               "warnings": [], "error": None}
 
     if _on("APP_EXT_DISABLED"):
         summary["error"] = "disabled by APP_EXT_DISABLED"
@@ -272,6 +288,21 @@ def register(relay, public_prefix: str = "/") -> dict:
                 summary["generate"] = _generate.summary_line()
             _step("停止/重答", _gn)
 
+        # ⑩-a 记忆层（P2 ⑩-a）
+        #    🔴 它是"房子的技术缓存"，不是"他的记忆" → **不挂 MCP 门**。
+        #       他自己的记忆走 OB 的 hold。这是**有意不做**，不是漏了。
+        #    🔴 本步只挂端点；`source` 缝在 ① 建表那一步就已经焊上了
+        #       （schema v3 → v4）—— 所以这一步挂了也**不影响缝**。
+        if _on("APP_EXT_MEMORY_DISABLED"):
+            summary["memory"] = "disabled by APP_EXT_MEMORY_DISABLED"
+        else:
+            from . import memory as _memory
+
+            def _mm():
+                _memory.install(relay, public_prefix)
+                summary["memory"] = _memory.summary_line()
+            _step("记忆层", _mm)
+
         summary["routes"] = list(_ROUTES)
         summary["ok"] = not summary["warnings"]
 
@@ -304,6 +335,8 @@ def register(relay, public_prefix: str = "/") -> dict:
         print(f"[app_ext] {summary['context']}")
     if summary.get("generate"):
         print(f"[app_ext] {summary['generate']}")
+    if summary.get("memory"):
+        print(f"[app_ext] {summary['memory']}")
     if summary["warnings"]:
         # 🔴 同上：GBK 安全（原本是 `⚠️ N 个步骤被跳过…`）。
         #    这一行只在**有步骤失败时**跑 —— 也就是只在全新 /data 上跑，

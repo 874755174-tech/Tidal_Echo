@@ -70,7 +70,8 @@ P2-0 已经吃过一次同款的亏：`iter_jsonl` 每条都对，`StreamingResp
      1     register 摘要含 context；`_ROUTES` 两条都在
      2-3   🔴 **不是房间**：不 import mcp、不碰 KaelLife
      4     🔴 原文不删：源码里没有对 messages 的写语句
-     5     🔴 v2 老库 → 起服务自动补 `summary_upto` 且 user_version=3
+     5     🔴 v2 老库 → 起服务自动补 `summary_upto`（版本 ≥ 3，**不写死**：
+           版本号会被后面每一站往上抬，写死只会腐坏）
      6     🔴 老的 `settings.provider_id` 迁移仍在（别把上一版弄丢）
      7-8   逃生开关在；verify_all 里接了本套
      9     🔴 关掉开关的房子：注入不发生、端点 404
@@ -703,8 +704,13 @@ def part_d(db: Path, log_path: Path, off_port=PORT_OFF) -> None:
         not re.search(r"(UPDATE|DELETE\s+FROM|INSERT\s+INTO)\s+messages", src, re.I), "")
     ver = q1(db, "PRAGMA user_version")
     cols = [r[1] for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(sessions)")]
-    chk("D5 🔴 v2 老库起服务后自动补 `summary_upto` 且 user_version=3",
-        int(ver or 0) == 3 and "summary_upto" in cols, f"ver={ver} cols={cols}")
+    # 🔴 这里用 `>=` 而不是 `==`，是有意的（2026-09-20 改）：
+    #    本套要守的是"**v3 那次迁移真发生了**"（肉在 `summary_upto in cols` 那一半），
+    #    而版本号会**被后面每一站一直往上抬**（v4 已经是 ⑩-a 的 `memories.source`）。
+    #    写死 `== 3` 只会让它随每一站腐坏 —— 那不是守护，那是负债。
+    #    （要守"没有人偷偷动表结构"的那条写死了，在 `generate_check.py` D9。）
+    chk("D5 🔴 v2 老库起服务后自动补 `summary_upto`（版本被抬到 ≥ 3）",
+        int(ver or 0) >= 3 and "summary_upto" in cols, f"ver={ver} cols={cols}")
     scols = [r[1] for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(settings)")]
     chk("D6 🔴 上一版的 `settings.provider_id` 迁移仍在",
         "provider_id" in scols, str(scols))

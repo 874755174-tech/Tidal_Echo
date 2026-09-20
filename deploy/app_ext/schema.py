@@ -48,7 +48,17 @@ Tidal_Echo 原版只有两张表：`messages`（含 `meta` JSON）和 `push_subs
 
 3. **版本号存在 `PRAGMA user_version`。**
    不新增"迁移记录表"——那会变成第 5 张表，而 `user_version` 本来就是
-   SQLite 为这个用途留的库头字段。当前 `SCHEMA_VERSION = 3`。
+   SQLite 为这个用途留的库头字段。当前 `SCHEMA_VERSION = 4`。
+
+   | 版本 | 加了什么 | 谁要的 |
+   |---|---|---|
+   | v1 | 四张表本身 | P0 |
+   | v2 | `settings.provider_id` | P1 模型网关 |
+   | v3 | `sessions.summary_upto` | P2 ⑧ 上下文管理 |
+   | **v4** | **`memories.source`** | **P2 ⑩-a（书房等的"缝"）** |
+
+   ⚠️ **v4 这一格曾经被规格预写成 "v2 → v3"** —— 因为规格写的时候
+   v2/v3 还没被占。**规格里的版本号会漂**，动 schema 前先读这里的现值。
 
 ## 为什么落在 `deploy/app_ext/`，而不是 `backend/app_ext/`
 
@@ -76,14 +86,18 @@ from typing import Optional
 
 
 # 当前 schema 版本。以后每次改表结构 +1，并在 `ensure_schema()` 的
-# 「迁移」那一段里补一步（见该函数内 "v1 → v2" 的写法：先 PRAGMA table_info
+# 「迁移」那一段里补一步（见该函数内 `additions` 的写法：先 PRAGMA table_info
 # 看列在不在，再 ALTER —— 这样新库/老库跑同一段代码都安全）。
 #
 #   1 → 四张表（P0，2026-09-14）
 #   2 → settings.provider_id（P1 模型网关要"供应商"这个概念，2026-09-14）
 #   3 → sessions.summary_upto（P2 ⑧ 滚动摘要要知道"已经压到哪条消息了"，
 #       否则每次压缩都要把全部旧消息重新喂一遍 —— 2026-09-19）
-SCHEMA_VERSION = 3
+#   4 → memories.source（P2 ⑩-a：这条记忆**从哪来**。`source_msg` 只指得到
+#       messages，书房那种"读一本书沉淀下来的"没有对应消息 → 没有这一列就
+#       永久"来源不明"。🔴 定死这时**表还是空的** → 加列零风险；
+#       一旦开写，后加的列**无法回填** —— 2026-09-20）
+SCHEMA_VERSION = 4
 
 # 四张表的建表语句。
 # ⚠️ 顺序有依赖：users 先建，其余三张都 REFERENCES users(id)。
@@ -143,6 +157,19 @@ DDL_TABLES = [
             kind       TEXT NOT NULL,             -- fact | preference | relationship | event
             text       TEXT NOT NULL,
             source_msg INTEGER,                   -- 从哪条消息提炼的（可回溯、可纠正）
+            -- 🆕 v4：这条记忆**从哪来**（chat | reading | craft | …）。
+            --     `source_msg` 指向 messages，只能记"对话里来的"；书房那种
+            --     "读过一本书沉淀下来的"**没有对应消息** → 没有 source 就永久来源不明。
+            --     这是**缝**不是**门**：形状锁死，取值不锁死。见 memories_store.SOURCES。
+            --
+            -- 🔴 **故意不写 DEFAULT**（2026-09-20 冒烟时改的，原本写了 DEFAULT 'chat'）：
+            --     `ALTER TABLE ... ADD COLUMN x TEXT DEFAULT 'chat'` 会让**老行也报 'chat'**
+            --     （SQLite 对老行返回那个默认值）→ 把"不知道从哪来"**静默洗成"来自对话"**。
+            --     这正是这一列存在的反面。默认值住在**代码**里（`SOURCE_DEFAULT`），
+            --     而 `add()` **每次都显式传值** → schema 里再放一个 DEFAULT 是多余的，
+            --     而且会让"新库建的列"和"老库 ALTER 出来的列"行为分叉（可测性也一起坏掉）。
+            --     ⇒ 省略 source 的插入得到 **NULL**，`NULL` 就是"不知道"，不兜底。
+            source     TEXT,
             salience   REAL DEFAULT 0.5,          -- 重要度（内部权重，永不展示）
             created    TEXT NOT NULL,
             last_used  TEXT
@@ -275,6 +302,11 @@ def ensure_schema(relay) -> dict:
             # (表, 列, 类型/默认值, 版本)
             ("settings", "provider_id", "TEXT", "v2"),
             ("sessions", "summary_upto", "INTEGER DEFAULT 0", "v3"),
+            # 🆕 v4：书房等的"缝"（Lily 09-19 定，见 施工图 §11.5②）。
+            #    🔴 加的时候 `memories` **还是空表** → 零风险；**开写之后这列无法回填**。
+            #    🔴 **不带 DEFAULT**（理由见 DDL 里那段注释）：带 DEFAULT 会让老行
+            #       报出那个默认值 → 把"不知道从哪来"洗成"来自对话"。省略 = NULL = 不知道。
+            ("memories", "source", "TEXT", "v4"),
         ]
         for table, col, decl, _ver in additions:
             cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}

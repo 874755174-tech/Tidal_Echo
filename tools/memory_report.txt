@@ -1,0 +1,89 @@
+[PASS] A1  add 返回 ok
+[PASS] A2  id 形状 m_xxxx
+[PASS] A3  落库能读回（正文一致）
+[PASS] A4  🔴 不传 source → chat（默认值住在代码里）
+[PASS] A5  显式 source 落库一致
+[PASS] A6  库里那一行的 source 真是 reading
+[PASS] A7  大小写/空白 → 归一化，且**不算降级**（不给噪音）
+[PASS] A8  🔴 形状非法 → chat
+[PASS] A9  🔴 降级**如实报**（source_coerced + source_raw 是原值）
+[PASS] A10 超长（>24）→ chat + 报降级
+[PASS] A11 空串 → chat（报降级）
+[PASS] A12 🔴 形状合法但未知 → **原样存**（缝的意义）
+[PASS] A13 且**没有**被报成降级
+[PASS] A14 kind 不在枚举 → fact
+[PASS] A15 空 text → ok False 且 reason=empty_text
+[PASS] A16 且**一行都没写进去**
+[PASS] A17 salience 夹进 0..1（上）
+[PASS] A18 salience 夹进 0..1（下）
+[PASS] A19 🔴 store 里**没有 delete 函数**（让'删记忆'在代码层面不存在）
+[PASS] A20 🔴 且模块上也没有这些属性
+[PASS] A21 list_recent 默认全取（回得比 0 多）
+[PASS] A22 ?source=reading 只回 reading
+[PASS] A23 🔴 source='chat' **不把 NULL 老行捞进来**（兜底=洗白）
+[PASS] A24 老行读回 source = **None**（不是 'chat'）
+[PASS] A25 touch 真改了 last_used
+[PASS] A26 touch 不存在的 id → not_found（不抛）
+[PASS] A27 stats 有 by_kind 与 by_source 两维
+[PASS] A28 🔴 NULL 归 '(unknown)'，**不并进 chat**
+[PASS] A29 🔴 public() 投影**不含 salience**
+[PASS] A30 🔴 as_extra_for_prompt 只留 kind/text（不带 salience、不带 source）
+[PASS] B1  起点确实是个 v3 库
+[PASS] B2  起点 memories 确实**没有** source 列（但**有** source_msg）
+[PASS] B3  升完 version = 4
+[PASS] B4  migrated 里点名 memories.source
+[PASS] B5  🔴 老行还在（行数没变、id 没变）
+[PASS] B6  🔴 老行正文一个字没改
+[PASS] B7  🔴 老行的新列是 **NULL**（不是 'chat' —— 不伪造来源）
+[PASS] B8  🔴 老行的 source_msg 也没被碰
+[PASS] B9  🔴 messages 的 DDL 逐字未变
+[PASS] B10 🔴 messages 行数未变（2 → 2）
+[PASS] B11 红线报告的 messages_untouched = True
+[PASS] B12 幂等：第二次 migrated 为空
+[PASS] B13 幂等：version 仍 4、列清单不变
+[PASS] B14 全新库建出来就有 source 列
+[PASS] B15 🔴 新库列清单 == 老库迁移后的列清单（**按集合**比，见 B16）
+[PASS] B16 列顺序不同这件事**被记录下来了**（ALTER 必然追加在末尾）
+[PASS] B17 🔴 代码**不依赖列顺序**：INSERT 一律带列名、`SELECT *` 的结果按 dict 取
+[PASS] B18 🔴 那一列上**没有 DEFAULT**（带 DEFAULT 会让老行报出默认值 = 伪造来源）
+[PASS] B19 手工 INSERT 省略 source → NULL（跟老行同一个语义）
+[PASS] C1  无密钥 GET → 401
+[PASS] C2  无密钥 POST → 401
+[PASS] C3  带密钥 GET → 200
+[PASS] C4  带密钥 stats → 200
+[PASS] C5  POST → 201 且 ok
+[PASS] C6  POST 回带出的 item.source 正确
+[PASS] C7  🔴 POST 响应里**没有 salience 这个词**（字符串级）
+[PASS] C8  🔴 GET 响应里**没有 salience**（字符串级）
+[PASS] C9  🔴 stats 响应里**没有 salience**
+[PASS] C10 🔴 连 'user_id' 也不回（白名单投影的旁证）
+[PASS] C11 写进去的读得回来（条数对上）
+[PASS] C12 ?source=reading 过滤生效
+[PASS] C13 ?limit=0 夹到 1
+[PASS] C14 ?limit=99999 夹到 500
+[PASS] C15 空 text → 400 empty_text
+[PASS] C16 超长 text → 400 text_too_long
+[PASS] C17 坏 JSON → 400 bad_json
+[PASS] C18 坏 salience → 400 bad_salience
+[PASS] C19 坏 source_msg → 400 bad_source_msg
+[PASS] C20 🔴 形状非法经端点 → 201 + source_coerced 说明
+[PASS] C21 🔴 未知但合法经端点 → 原样进库（缝从端点也通）
+[PASS] C22 🔴 没有 DELETE 路由（405）
+[PASS] C23 🔴 没有 PUT 路由（405）
+[PASS] D1  _ROUTES 里有 /app/ext/memories
+[PASS] D2  _ROUTES 里有 /app/ext/memories/stats
+[PASS] D3  register() 里有第 ⑩ 步（memory.install + 开关）
+[PASS] D4  🔴 memory.py 对 memories **没有任何 DELETE / DROP / ALTER**
+[PASS] D5  🔴 memory.py **不 import mcp**、不注册 MCP 工具（它不是房间）
+[PASS] D6  🔴 整个扩展层没有 delete_memory 这类函数（红线是结构性的）
+[PASS] D7  🔴 正常开关：register() 之后端点真挂上了（无密钥 401 / 有密钥 200）
+[PASS] D8  register() 摘要把记忆层报出来了
+[PASS] D9  🔴 关掉开关：/app/ext/memories → 404（能力没了）
+[PASS] D10 🔴 但**表与缝还在**（能力没了 ≠ 数据没了）：source 列 + version 4
+[PASS] D11 schema 版本 = 4
+[PASS] D12 messages 红线断言在（ensure_schema 里那段比对没被删）
+[PASS] D13 🔴 summary_line() GBK 安全（Windows 启动日志会打它）
+[PASS] D14 🔴 memory.py 的 print 语句里没有 GBK 编不出的符号（扫源码）
+[PASS] D15 verify_all 已接本套
+
+共 87 项，通过 87，失败 0
