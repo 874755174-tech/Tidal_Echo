@@ -603,6 +603,106 @@ C12 / C13 / C14 专门钉这一组（突变测试：把标签改回旧版 → �
 然后跟"没注入时的那份"逐字段比。验收自己也被验过：把注入去掉 → B2/B3/B10/C11 红；
 改成"顺手删一条" → **只有 B4 红**；不记 `summary_upto` → C7/C10 红。
 
+## 第十道缝：停止 / 重答 / 多版本（P2 ⑨，2026-09-19）—— **`messages` 红线收窄到"只准写 meta"**
+
+四个端点：`POST /app/ext/generate/{stop,retry,reroll}` + `GET /app/ext/generate/status`。
+范围**只有"最后一条回复"**（Lily 拍板）。
+
+### 🔴 这条缝的位置是代码读出来的，不是猜的
+
+   前端 → 房子 /app/send → forward_to_loop → 身体 handle_ingest
+       → 身体 stream_chat（上游就是这个房子）→ 网关代理到真 provider
+       → 身体 sink 回调 → 房子 /channel/out → save_message → 前端 SSE
+
+| 结论 | 依据 |
+|---|---|
+| 房子的**网关**是唯一自己过手上游流的地方 → "真的不再要数据"只能落在这儿 | `llm_routes.py` 的 `_producer()` + `_gen()` |
+| 定位"当前这次生成"**只能用 `api_session`** | 身体的 `stream_id` 是本地 `uuid4`（`examples/api_loop.py:386`），发给上游的 body 只有 `{model, messages, temperature, max_tokens, stream}` —— **从不传它** |
+| 房子**能**叫身体重跑 | `/app/send` 就是走 `LOOP_INGEST_URL`（读的是 `RELAY_LOOP_INGEST_URL`），`generate.py` 复用同一个变量 |
+| 停止**不能**靠"掐断上游流"实现 | 见下 |
+
+### 🔴🔴 `messages` 红线收窄（Lily 2026-09-19 拍板）
+
+⑨ 必须在库里留痕，但**原文一个字不能动**。于是把"绝不碰"收窄成三条硬约束，
+由 `schema.with_meta_guard()` 在**运行时**保证（不是注释承诺）：
+
+1. 行数不变　2. 正文各列逐字节不变（`messages_body_signature()` = 除 `meta` 外全部列的 sha256）　3. 只允许 `UPDATE messages SET meta = ?`
+
+越界 → **回滚 + 抛 `RuntimeError("红线被破坏")`**。`SCHEMA_VERSION` **仍是 3**（改的是写入策略，不是表结构）。
+验收里有一条**故意越界**的用例（`UPDATE messages SET text='HACKED'`）必须被拦下且已回滚。
+
+### 🔴 停止为什么是"两段式"，以及"温柔掐"
+
+   ① 前端：立刻不渲染（AbortSignal 断 SSE）   —— 体验
+   ② 网关：真的不再向 provider 要数据          —— 钱
+
+② 的实现是**往队列里塞一个哨兵**（`register_notify` 传 `queue.put_nowait` 进去），
+而不是给 `q.get()` 加超时轮询 —— `asyncio.wait_for` 掐 `Queue.get()` 有"刚好取到却当成超时"
+的经典竞态，丢了 chunk 就会让回复缺一截。哨兵=**不轮询、零延迟、不丢东西**。
+
+收到哨兵后 `task.cancel()` + **补一个正常的 `finish=stop` + `data: [DONE]`**，
+让身体以为"模型正常说完了"，那半条才能照常 POST 回来落库。
+
+#### ⚠️ 诚实记录：这条"必须温柔掐"的理由，我用两次变异测试**没能证出来**
+
+原本的理由是："裸断流 → 身体 `run_model` 走 `except Exception` → fallback 换链上下一个模型重跑"
+（`examples/api_loop.py:376-381`）。我试了两种变异，**断言 B8 都没红**：
+
+| 变异 | 预期 | 实际 |
+|---|---|---|
+| ① 删掉"补收尾"两行，只留 `cancel() + break` | B8 红 | **B8 绿**，只有 B7 红 |
+| ② 停止分支直接 `raise RuntimeError` | B8 红 | **B8 绿**，只有 B7 红 |
+
+查出来的原因（**记下来，别再想当然**）：
+
+- `stream_chat`（`api_loop.py:312-330`）对"流没有 `[DONE]` 就结束"是**宽容的** —— `async for` 读完就返回半截文本，不抛。
+- Starlette 的 `StreamingResponse` 在生成器**抛异常**时，`finally` 里**仍会发完 chunked 终止块** → 客户端收到的还是一个"完整的短流"。
+- fallback 的唯一触发条件是 **HTTP 状态码**（`FALLBACK_CODES`，`api_loop.py:62`），而"停止"只发生在流**已经开着**之后。
+  ⇒ **"停止"结构性不可能变成"换模型重跑"。** 这是好消息，但它意味着 B8 是**回归守卫**（防"有人把停止改成返回 HTTP 错误"），不是有牙齿的断言 —— 验收里已经如实标注。
+
+### 🔴🔴 顺手补上的缺口：**上游自己断掉，以前一点痕迹都没有**
+
+同一个实验翻出来的真问题：网关 `_gen()` 的 `("err", e)` 分支往流里发
+`data: {"error": …}` + `data: [DONE]`，而身体的 `stream_chat` **对 error 帧视而不见**
+（只取 `delta.content`）→ 读到 `[DONE]` 就当"正常说完"。
+
+    上游吐到第 3 片炸了 → 身体收到"正常结束" → 半截照常落库 → 库里零痕迹
+
+屏幕上就是"他话说了一半"，**没有任何地方记得这件事发生过**。⑨ 的 stop 只补了
+"用户主动停"那一半（`meta.truncated`），这一半现在归 `note_upstream_error()`
+（`meta.upstream_error`）—— **与 stop 共用同一台机器** `_tag_after`：都是"等那条落库再打标"、
+都有界（`GENERATE_TAG_WAIT`，默认 25s）、都只碰 `meta`、都走三道守卫。
+
+两把钥匙**有意分开**：`truncated` = 用户按了停；`upstream_error` = 上游断了。
+屏幕上长得一样，排查方向完全不同。
+
+#### 🔴 配一道防"写假痕迹"的判别
+
+`_tag_after` 里有顺序硬约束：**先** `_newer_user_row()`（有没有新的"人说的话"），
+**再** `_newest_reply_after()`。看到新的一轮开始 → 立刻放弃打标。
+理由：等的那半条不落库、而下一轮开始了的话，"第一条 out/reply"就变成**下一轮的回复** →
+会把假痕迹写进 `messages`，比不写坏得多。源码顺序本身也是一条断言（`generate_check.py` D18）。
+
+另外"认不出会话"时**不跳过**（与 ⑧ 的注入相反）：`note_upstream_error` 会退化成
+**只按 id 认**。因为这里是**留痕**不是**注入** —— "认不出 → 干脆不记"会把要补的洞留回去；
+安全性靠单 Kael（同一时刻只有一次生成在跑）+ 上面那道判别一起兜。
+
+### 验收：`tools/generate_check.py`（第 12 套，71 项）
+
+A 纯逻辑 19 · B 网关照停（假身体 + 慢上游，**从出口倒着验**）19 · C retry/reroll 17 · D 红线/接线/开关 16。
+
+B 组必须**自己写一个假身体**（照抄 `api_loop.stream_chat` / `run_model` 的形状**含 fallback 那段**），
+因为"停止变成偷偷换模型重跑"这个病**只会在身体那一侧显形**；再配一个**慢假上游**
+（每片之间睡 0.35s），停止才有落点。断言打在**上游被调用的次数**上。
+
+### ⚠️ 两个本地坑（都踩过）
+
+- **启动日志必须 GBK 可编码**：`register()` 末尾那些 `print` 打在 **try 之外**，
+  Windows 子进程 stdout 是 cp936 → 一个 `⑨` / `⚠️` 就 `UnicodeEncodeError` → **房子起不来**。
+  所以 `summary_line()` 与所有 print 一律纯中文，符号只准出现在注释与 docstring 里。
+- **关掉开关的房子：GET 404 但 POST 405**。因为 `web/` 静态目录挂在 `/`，
+  Starlette 的 `StaticFiles` 对非 GET/HEAD 一律直接回 405。这是**房子既有行为**，不是 ⑨ 的错。
+
 ## `web/index.html`：10 处家装 + 1 处 bug 修复（**唯一被动过的原生文件**）
 
 按 Lily 的反馈做的"家装"。

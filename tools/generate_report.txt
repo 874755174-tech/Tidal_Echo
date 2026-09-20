@@ -1,0 +1,84 @@
+[PASS] A1 没有在飞时 should_stop=False
+[PASS] A2 begin 之后 live 有一条
+[PASS] A3 🔴 不传 session 也能停到当前在飞的那个
+[PASS] A4 再停一次：ok 且说明已经在停了
+[PASS] A5 🔴 register_notify 的回调真被叫到（零延迟停止的关键）
+[PASS] A6 should_stop 现在为 True
+[PASS] A7 end() 之后 should_stop=False 且 live 空
+[PASS] A8 没有在飞时 request_stop → ok=False（不抛）
+[PASS] A9 🔴 _key_of('') = 未知占位（认不出会话也能停当前那个）
+[PASS] A10 TTL：超时没动的登记被 prune 掉
+[PASS] A11 🔴 last_turn 认 api_session：另一会话的消息不进上一次往返
+[PASS] A12 有 user 没回复 → no_reply_yet
+[PASS] A13 不存在的会话 → no_session_rows
+[PASS] A16 _newest_reply_after 给了会话 → 只认这个会话的（不串味）
+[PASS] A17 🔴 不给会话 → 只按 id 认（**有意的口子**，认不出会话时也要留痕；它确实会拿到最新那条，哪怕属于别的会话）
+[PASS] A18 _newer_user_row 认出「新的你说的话」（= 新的一轮开始了）
+[PASS] A19 没有更新的你说的话 → {}（正常情况：那半条正等着落库）
+[PASS] A19b 没会话归属的 in 行也算（第 7 行没有 api_session）
+[PASS] A14 brain_target() 读不到文件 → ''（不是抛）
+[PASS] A14b brain_target() 认得出 loop / desktop
+[PASS] A14c brain_target() 认得出 desktop（前端不叫身体，走房子自己）
+[PASS] A14d brain_target() 认不出的取值 → ''（不瞎猜）
+[PASS] A15 loop_ingest_url() 读的是 RELAY_LOOP_INGEST_URL 同一个变量
+[PASS] B1 不停止：假身体拿到了完整版
+[PASS] B2 不停止：网关发的是正常收尾（[DONE] + finish=stop）
+[PASS] B3 不停止：上游只被调用 1 次（没有 fallback）
+[PASS] B4 不停止：上游把 6 个碎片都吐了
+[PASS] B5 不停止：完整落库且**不带** truncated
+[PASS] B6 stop 端点 200 且 ok=True
+[PASS] B7 🔴 停止后网关发的是**正常收尾**（[DONE] + finish=stop）—— 这一条咬得住：两次变异（不补收尾 / 直接抛异常）它都变红了
+[PASS] B8 🔴 停止后上游**只被调用 1 次**（他没有偷偷换模型重跑一遍）〔回归守卫：当前变异触发不了，见 B16〕
+[PASS] B9 🔴 停止后上游不再被继续读（吐出的碎片数 < 全量）
+[PASS] B10 🔴 那半条落库了，而且比完整版短
+[PASS] B11 🔴 落库那条 meta.truncated = true（库里留痕，导出看得见）
+[PASS] B12 🔴 停止没删任何原文：老的 id 一个不少，行数只 +1
+[PASS] B13 🔴 停止不改已有内容：停止前那批行的正文指纹**逐字节相同**
+[PASS] B14 🔴 那半条是完整版的**真前缀**（不是一个被拼歪的残段）
+[PASS] B15 🔴 打标是**合并**不是覆盖：那半条的 meta 里会话归属还在
+[PASS] B16 🔴 上游在流中途协议级炸掉 → 房子**吸收**了它（身体不 fallback，上游只被调 1 次）
+[PASS] B17 🔴 代价：身体把**半截**当完整的收了（saw_done=True、正文=前 3 片、meta 里原本什么都没有）
+[PASS] B18 🔴 上游自己断掉的那半条**留痕了**（meta.upstream_error）—— 这正是「⑨ 只补了主动停那一半」的那个洞
+[PASS] B19 🔴 两种留痕**不混**：upstream_error 那条**没有** truncated 标（一个是'用户按了停'，一个是'上游断了'，排查方向完全不同）
+[PASS] C1 retry 前：旧那条在、且还没 superseded
+[PASS] C2 retry 端点 200 且 ok=True
+[PASS] C3 retry 报的 superseded_id = 旧那条
+[PASS] C4 🔴 旧那条**还在库里**（没被删）
+[PASS] C5 🔴 旧那条 text **一个字没改**（只动 meta）
+[PASS] C6 🔴 旧那条被标 superseded=true
+[PASS] C7 🔴 新的一条 out 出现，内容是完整版
+[PASS] C8 🔴 行数只 +1（新回复），一条都没少
+[PASS] C9 🔴 假身体收到的是**同一条你说的话**（id 与原文都对）
+[PASS] C10 retry 之后上游只被调用 1 次（重答走的是身体，不是房子自己造）
+[PASS] C11 reroll 端点 200 且 ok=True
+[PASS] C12 🔴 reroll 打的是 variant 标（前端 ‹1/2› 切换的依据）
+[PASS] C13 🔴 reroll 之后旧版本一条不删：out 条数只 +1，老 id 全在
+[PASS] C14 不存在的会话 → 400 + no_session_rows
+[PASS] C15 不传 session → 400 + no_session
+[PASS] C16 桌面模式 → 400 + brain_desktop（给的是好报错，不是崩）
+[PASS] C17 status 只读：报 brain_target + guard + 上一次往返
+[PASS] D1 _ROUTES 里有 /app/ext/generate/stop
+[PASS] D1 _ROUTES 里有 /app/ext/generate/retry
+[PASS] D1 _ROUTES 里有 /app/ext/generate/reroll
+[PASS] D1 _ROUTES 里有 /app/ext/generate/status
+[PASS] D2 register 里有第 ⑨ 步（generate.install）
+[PASS] D3 🔴 扩展层对 messages 的写语句**只有** `SET meta = ?`（无越界写法）
+[PASS] D4 🔴 源码里没有 DELETE / DROP / ALTER 打 messages 的写法
+[PASS] D5 🔴 meta 守卫挡住改正文
+[PASS] D6 🔴 被拦之后已回滚（正文仍是原文）
+[PASS] D7 meta 守卫允许只写 meta
+[PASS] D8 🔴 只写 meta **不动正文指纹**（真比对，不是自比）
+[PASS] D9 schema 版本没被这次改动顶掉（仍是 3）
+[PASS] D10 逃生开关在（APP_EXT_GENERATE_DISABLED）
+[PASS] D11 verify_all 已接本套
+[PASS] D16 🔴 「上游自己断」的留痕已接进网关的错误分支
+[PASS] D17 🔴 两种留痕是**两把钥匙**，不许合并成一个字段
+[PASS] D18 🔴 `_tag_after` 里先查「新的一轮开始了没有」，再取那条回复（顺序反了就会写假痕迹）
+[PASS] D19 🔴 认不出会话也照样排打标（stop 里不再有 `if target:` 那道短路）
+[PASS] D12 启动日志里有 ⑨ 那行（且 GBK 安全：不带 ⑨ 符号）
+[PASS] D13 🔴 启动日志整段都是 GBK 可编码的（不然房子起不来）
+[PASS] D14 summary_line() 本身 GBK 安全
+[PASS] D15 🔴 关掉开关的房子：端点不再存在（GET 404 / POST 405 是静态目录兜底）
+[PASS] D15b 🔴 ⑨ 关掉之后：同一条链路上的模型网关**照常能说话**（房子没塌）
+
+共 82 项，通过 82，失败 0

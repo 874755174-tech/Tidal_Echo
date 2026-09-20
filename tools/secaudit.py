@@ -15,6 +15,16 @@ import json
 import os
 import subprocess
 import sys
+
+# 🔴 本机 PowerShell 5.1 管道下 sys.stdout.encoding = cp936(gbk)，而验收名里有
+#    🔴/✅/⚠️ 这类 GBK 编不出的字符 -> print 到一半 UnicodeEncodeError，整套会
+#    **半路死掉**（看起来像"验收挂了"，其实是没跑完）。
+#    errors="replace" 只把编不出的字符降级成 "?"，中文和结论一个字不动。
+try:
+    sys.stdout.reconfigure(errors="replace")
+except Exception:
+    pass
+
 import time
 import urllib.error
 import urllib.request

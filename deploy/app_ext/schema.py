@@ -21,11 +21,25 @@ Tidal_Echo 原版只有两张表：`messages`（含 `meta` JSON）和 `push_subs
 
 ## 🔴 三条硬约束
 
-1. **`messages` 表一个字不改、一行不动。**
+1. **`messages` 表：结构不改、行不改、正文不改。**
    `ensure_schema()` 在建表前后各取一次 `messages` 的 DDL 快照，
    **只要发现变化就抛错**。这不是注释里的承诺，是运行时断言
    （见 `_messages_signature` / 调用处那段 `if before != after: raise`）。
    写在注释里的规矩会被后人删掉，跑得起来的断言不会。
+
+   > 🆕 **2026-09-19 收窄（⑨ stop / retry / reroll 需要）**
+   > 原话是「`messages` 表一个字不改、一行不动」，现在**收窄**为：
+   > **只准写 `meta` 这一列**（`truncated` / `superseded` / `variants` 都住在那）。
+   > 约束从「别碰这个表」变成**三条更硬的具体禁令**，由
+   > `messages_body_signature()` + `with_meta_guard()` 在运行时守住：
+   >   ① **行数不变**（不许 insert / delete）
+   >   ② **`id / ts / direction / kind / text` 逐字不变**（不许改正文）
+   >   ③ **只允许 `UPDATE … SET meta = ?`**（唯一写入口 = `update_message_meta()`）
+   > **为什么敢收窄**：⑨ 在规划里的定位本来就是「改写库逻辑」；而且读那边早就
+   > 依赖这个表了（⑧ 整层都靠读 `messages` 工作）。真正危险的是"改正文 / 删行"，
+   > 而这两条被上面的断言**结构性挡住** —— 比一句泛泛的"不许碰"更能说明白守什么。
+   > ⚠️ 本次**不升 `SCHEMA_VERSION`**：表结构一格没变，变的只是写入策略。
+   > `user_version` 记的是**结构**，不是策略。
 
 2. **幂等。**
    全部 `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`，
@@ -34,7 +48,7 @@ Tidal_Echo 原版只有两张表：`messages`（含 `meta` JSON）和 `push_subs
 
 3. **版本号存在 `PRAGMA user_version`。**
    不新增"迁移记录表"——那会变成第 5 张表，而 `user_version` 本来就是
-   SQLite 为这个用途留的库头字段。当前 `SCHEMA_VERSION = 1`。
+   SQLite 为这个用途留的库头字段。当前 `SCHEMA_VERSION = 3`。
 
 ## 为什么落在 `deploy/app_ext/`，而不是 `backend/app_ext/`
 
@@ -56,6 +70,7 @@ Tidal_Echo 原版只有两张表：`messages`（含 `meta` JSON）和 `push_subs
   （本节结论已于 2026-09-14 回填 `架构与产品路线规划.md` §3.2。）
 """
 
+import hashlib
 import sqlite3
 from typing import Optional
 
@@ -216,7 +231,7 @@ def schema_report(relay) -> dict:
 
 
 def ensure_schema(relay) -> dict:
-    """建齐四张表（幂等）。**不碰 `messages`。**
+    """建齐四张表（幂等）。**本函数自己不碰 `messages`。**
 
     返回：
         {
@@ -294,4 +309,143 @@ def ensure_schema(relay) -> dict:
         "migrated": migrated,
         "messages_rows": msg_after,
         "messages_untouched": True,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 🔴 messages 红线的「第二道看守」—— 只准写 meta（2026-09-19 · ⑨ 收窄）
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 上面 `ensure_schema()` 里那道 `_messages_signature` 守的是 **表结构**（DDL 快照）。
+# ⑨ stop / retry / reroll 要在 `messages.meta` 里记 truncated / superseded / variants
+# —— 那是**行数据**，DDL 看守看不见它。所以这里补第二道，两道正交：
+#
+#     _messages_signature      守「表结构没被改」
+#     messages_body_signature  守「行数没变 + 正文没被改」
+#
+# 唯一被允许的写入口是 `update_message_meta()`；它自带守卫，且**只发一条**
+# `UPDATE … SET meta = ?`。想绕过去就得自己开连接 —— 而验收脚本会扫源码盯这件事。
+
+#: 扩展层唯一被允许改的 `messages` 列。只有一个，且必须是 JSON 列。
+META_WRITABLE_COLUMNS = ("meta",)
+
+#: 正文列 —— 这些列一个字符都不许动（守卫逐字比对的就是它们）。
+MESSAGES_BODY_COLUMNS = ("id", "ts", "direction", "kind", "text")
+
+
+def messages_body_signature(conn) -> str:
+    """取 `messages` 的**正文快照**：`行数 : 每行正文列拼接后的 sha256`。
+
+    🔴 这是收窄后那条红线的运行时保证。任何"改正文 / 删行 / 加行"都会让返回值变化。
+    `meta` 列**故意不在**指纹里 —— 它是唯一允许改的那一格。
+    （`ORDER BY id` 保证顺序稳定，否则同一份数据两次取会得到不同指纹 —— 那是假红。）
+    """
+    rows = conn.execute(
+        "SELECT id, ts, direction, kind, text FROM messages ORDER BY id"
+    ).fetchall()
+    h = hashlib.sha256()
+    for r in rows:
+        for col in MESSAGES_BODY_COLUMNS:
+            h.update(str(r[col]).encode("utf-8", "replace"))
+            h.update(b"\x1f")
+        h.update(b"\x1e")
+    return "%d:%s" % (len(rows), h.hexdigest())
+
+
+def with_meta_guard(relay, fn):
+    """在「只准写 meta」的守卫下执行 `fn(conn)`。**越界立即抛错并回滚。**
+
+    `fn(conn)` 只能通过 `update_message_meta` 里那种 `UPDATE … SET meta = ?` 写库；
+    写别的列 / 增删行 → 退出时指纹不一致 → 抛 `RuntimeError` + `rollback()`。
+
+    ⚠️ 守卫看的是**整张表**（不只 `fn` 动的那一行）—— 这是有意的：
+       将来谁在别处顺手写了 `messages`，这里也会一起报出来。
+    """
+    with connect(relay) as conn:
+        before = messages_body_signature(conn)
+        try:
+            out = fn(conn)
+        except BaseException:
+            conn.rollback()
+            raise
+        after = messages_body_signature(conn)
+        if before != after:
+            conn.rollback()
+            raise RuntimeError(
+                "红线被破坏：有人动了 messages 的正文或行数（只准写 meta 列）。\n"
+                f"  before: {before}\n"
+                f"  after : {after}\n"
+                "  允许的写法只有 `UPDATE messages SET meta = ? WHERE id = ?`，"
+                "请改用 schema.update_message_meta()。"
+            )
+        conn.commit()
+        return out
+
+
+def update_message_meta(relay, msg_id: int, patch: Optional[dict] = None,
+                        drop=()) -> bool:
+    """**唯一被允许的 `messages` 写入口**：只改 `meta` 列。
+
+        patch 里的键合并进原 meta（`None` 值 = 删掉这个键，见下）
+        drop 里列出的键从 meta 里移除
+
+    返回 True = 真的写了一行；False = 没这条消息（**不抛错**，调用方决定怎么处理）。
+    原 meta 不是合法 JSON / 不是对象 → 当成 `{}`，但**不丢原文**：
+    把它挪进 `meta_raw` 保住，免得"修一下 meta"顺手毁掉别人的数据。
+    """
+    import json as _json
+
+    def _do(conn):
+        row = conn.execute("SELECT meta FROM messages WHERE id = ?",
+                           (int(msg_id),)).fetchone()
+        if row is None:
+            return False
+        raw = row["meta"]
+        try:
+            cur = _json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            cur = {}
+        if not isinstance(cur, dict):
+            cur = {"meta_raw": raw}
+        if isinstance(patch, dict):
+            for k, v in patch.items():
+                if v is None:
+                    cur.pop(k, None)
+                else:
+                    cur[k] = v
+        for k in (drop or ()):
+            cur.pop(k, None)
+        conn.execute("UPDATE messages SET meta = ? WHERE id = ?",
+                     (_json.dumps(cur, ensure_ascii=False), int(msg_id)))
+        return True
+
+    return bool(with_meta_guard(relay, _do))
+
+
+def read_message_meta(relay, msg_id: int) -> dict:
+    """只读：拿一条消息的 meta（解析失败 / 不存在 → `{}`）。"""
+    import json as _json
+
+    with connect(relay) as conn:
+        row = conn.execute("SELECT meta FROM messages WHERE id = ?",
+                           (int(msg_id),)).fetchone()
+    if row is None:
+        return {}
+    try:
+        out = _json.loads(row["meta"]) if row["meta"] else {}
+    except (TypeError, ValueError):
+        return {}
+    return out if isinstance(out, dict) else {}
+
+
+def guard_report(relay) -> dict:
+    """只读诊断：当前 `messages` 的指纹 + 行数（给验收 / 线上体检用）。"""
+    with connect(relay) as conn:
+        sig = messages_body_signature(conn)
+        n = conn.execute("SELECT COUNT(*) AS n FROM messages").fetchone()["n"]
+    return {
+        "messages_rows": n,
+        "body_signature": sig,
+        "meta_only_write": True,
+        "writable_columns": list(META_WRITABLE_COLUMNS),
     }

@@ -307,6 +307,12 @@ def _last_user_text(msgs) -> str:
     return ""
 
 
+#: 公开别名 —— 给 ⑨（`generate.py`）复用同一个"最后一条用户消息"的取法。
+#: **会话是怎么认出来的，只该有一份实现**；⑨ 的停止定位与 ⑧ 的注入认会话必须同源，
+#: 否则两边可能对"这是哪个会话"给出不同答案 —— 那比认不出来更糟。
+last_user_text = _last_user_text
+
+
 def _system_chars(msgs) -> int:
     """当前 system 部分的总字符数（对齐 `normalize_request` 的口径：parts 间 +2）。"""
     parts = [str(m.get("content") or "") for m in (msgs or [])

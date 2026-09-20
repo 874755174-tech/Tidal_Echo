@@ -63,6 +63,27 @@ import os
 import sys
 from pathlib import Path
 
+# ── 日志编码统一成 UTF-8（**必须在 `import app` / `app_ext` 之前**）────────────
+# 🔴🔴 为什么要有这三行（2026-09-19 实拍，两个症状同一个根因）：
+#   本机 Windows 上，stdout 一旦被重定向（管道 / 文件），Python 就按 locale 编码 =
+#   **cp936(gbk)** 输出。于是：
+#     ① 日志里的中文按 GBK 落盘，而所有验收脚本一律按 **utf-8** 读日志
+#        （`log_path.read_text(encoding="utf-8")`）→ 中文全成乱码 →
+#        "日志里说了出来"那一类断言**假红**（context_check D1 / workshop_check E8a~E8c）；
+#     ② 日志里只要有一个 GBK 编不出的字符（`⚠️` 这类），print 直接
+#        UnicodeEncodeError → **房子根本起不来**。而"某一步失败"恰恰只在
+#        **全新 /data** 上发生 —— 于是这个 bug 只在第一次部署时出现，最难查。
+#   生产（Zeabur / Linux）本来就是 UTF-8，所以这一行在线上是**空操作**；
+#   它做的是"让本地和线上一致"，并让日志这个调试界面在任何地方都读得出来。
+#   `errors="replace"` 再加一道保险：宁可打一个 `?`，也不许整个进程死掉。
+#   ⚠️ 这**不是**对"print 必须 GBK 安全"那条红线的替代 —— 那条仍然按住（且由
+#      generate_check.py 的 D12~D14 扫源码来验）。这里是多一层，不是少一层。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 

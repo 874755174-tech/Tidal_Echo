@@ -117,6 +117,38 @@ def _inject(relay, body: dict) -> dict:
         return {"ok": False, "injected": False, "reason": f"{type(e).__name__}: {e}"}
 
 
+def _G9():
+    """⑨ 停止/重答模块（局部导入）。拿不到 → None，调用方一律跳过。"""
+    try:
+        from . import generate as GEN
+        return GEN
+    except Exception:
+        return None
+
+
+def _solve_session(relay, body: dict) -> str:
+    """⑨ 用：认出这次生成在替**哪个会话**说话。认不出 → `""`（一切照旧）。
+
+    🔴 为什么必须在这里认：身体的 `stream_id` 从不往上游传（见 `generate.py` 顶部），
+       网关**唯一**能拿到的身份线索就是"当前这条用户消息的原文"。
+    🔴 与 ⑧ 共用同一个取法与同一个反查（`context.last_user_text` / `session_of`）——
+       **会话是怎么认出来的只该有一份实现**，否则两边会给出不同答案。
+    🔴 fail-open：任何异常都返回 `""` → 停止检查点整段失效，但**说话照常**。
+    """
+    try:
+        from . import context as C
+        msgs = body.get("messages")
+        if not isinstance(msgs, list):
+            return ""
+        probe = C.last_user_text(msgs)
+        if not probe:
+            return ""
+        found = C.session_of(relay, probe)
+        return str((found or {}).get("session_id") or "")
+    except Exception:
+        return ""
+
+
 async def _read_json(request) -> dict:
     """读请求体。不是 JSON / 不是对象（数组等）→ 返回 `_BAD`，调用方回 400。"""
     try:
@@ -301,6 +333,20 @@ def install(relay, public_prefix: str = "/") -> None:
         #    只是不发进流里。这样"关掉"= 完全回到改动前的行为，可逆。
         show_think = G.expose_reasoning()
 
+        # ── ⑨ 登记"这一次生成在飞" ─────────────────────────────────────────
+        # 🔴 停止信号走**往队列塞哨兵**（`register_notify`），不给 `q.get()` 加超时轮询：
+        #    `asyncio.wait_for` 掐 `Queue.get()` 有"刚好取到却当超时"的经典竞态，
+        #    丢一个 chunk 会让回复缺一截。塞哨兵 = 不轮询、零延迟、不丢东西。
+        # 🔴 认不出会话（g_sid=""）也照样登记 —— "停当前在飞的那一个"要能用。
+        g_sid = _solve_session(relay, body)
+        G9 = _G9()
+        if G9 is not None:
+            try:
+                G9.begin(g_sid, model=mdl)
+                G9.register_notify(g_sid, lambda: q.put_nowait(("stop", None)))
+            except Exception:
+                G9 = None                     # ⑨ 出问题 = 少了"能停"这个能力，说话照常
+
         async def _producer():
             try:
                 res = await G.stream_chat(p["id"], mdl, req,
@@ -314,11 +360,29 @@ def install(relay, public_prefix: str = "/") -> None:
 
         async def _gen():
             task = asyncio.create_task(_producer())
+            stopped = False
             try:
                 while True:
                     kind, val = await q.get()
+                    if kind == "stop":
+                        # 🔴🔴 ⑨ 的收尾必须"**温柔掐**"：补一个**正常的** `finish=stop`
+                        #     + `data: [DONE]`，让身体以为"模型正常说完了"。
+                        #    如果这里直接把流掐断，身体 `run_model` 会走
+                        #    `except Exception` → **fallback 去链上的下一个模型重跑一遍**
+                        #    （`examples/api_loop.py:376-381`）→ 用户看到的"停止"
+                        #    会变成"换了个模型又生成了一整条"。
+                        stopped = True
+                        task.cancel()          # 真停住上游：不再向 provider 要数据
+                        yield _chunk(rid, mdl, created, finish="stop")
+                        yield "data: [DONE]\n\n"
+                        break
                     if kind == "d":
                         yield _chunk(rid, mdl, created, text=val)
+                        if G9 is not None:
+                            try:
+                                G9.touch(g_sid, len(val))
+                            except Exception:
+                                pass
                     elif kind == "r":
                         # 思考链单独成帧（delta 里只有 reasoning_content）。
                         # 顺序天然保序：跟正文走同一个队列，上游怎么发我们就怎么放。
@@ -330,6 +394,20 @@ def install(relay, public_prefix: str = "/") -> None:
                         yield "data: [DONE]\n\n"
                         break
                     else:
+                        # 🔴 上游**中途**炸了（已开流，只能在流里报）。
+                        #    这一帧 + [DONE] 对"这次说话"是对的（身体要有个结束标记
+                        #    才能收尾），但它有个**副作用**（2026-09-19 实测发现）：
+                        #    身体的 `stream_chat` 对 error 帧**视而不见**（只取
+                        #    `delta.content`），读到 [DONE] 就当"模型正常说完了"
+                        #    → 那半截照常落库，而**库里一点痕迹都没有**。
+                        #    所以这里补一句留痕：等那条落库后打 `upstream_error`
+                        #    （与 stop 的 `truncated` 共用同一台机器）。
+                        #    只碰 `meta`，走三道守卫；任何异常都不许影响这条流。
+                        if G9 is not None:
+                            try:
+                                await G9.note_upstream_error(relay, g_sid)
+                            except Exception:
+                                pass
                         err = val.as_dict() if hasattr(val, "as_dict") else {"message": str(val)}
                         yield "data: " + json.dumps({"error": err}, ensure_ascii=False) + "\n\n"
                         yield "data: [DONE]\n\n"
@@ -342,6 +420,12 @@ def install(relay, public_prefix: str = "/") -> None:
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+                # ⑨ 注销登记（正常结束 / 报错 / 被停，三条路都要走到）
+                if G9 is not None:
+                    try:
+                        G9.end(g_sid, stopped=stopped)
+                    except Exception:
+                        pass
 
         return StreamingResponse(_gen(), media_type="text/event-stream", headers=SSE_HEADERS)
 

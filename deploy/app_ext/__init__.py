@@ -32,6 +32,15 @@
                        + `POST /app/ext/context/summarize`（**手动**触发压缩）+ `/status`
                        🔴 房子**绝不自己在后台调 LLM 花钱**：压不压、何时压 = 人说了算
 
+    ⏹ · 停止/重答（P2 ⑨，2026-09-19 起）
+    generate.py        **stop / retry / reroll**：只做"最后一条回复"
+                       + `POST /app/ext/generate/{stop,retry,reroll}` + `GET /status`
+                       🔴 定位键是 **api_session**（身体的 `stream_id` 从不往上游传）
+                       🔴 会写 `messages`，但**只写 `meta` 列**（truncated / superseded），
+                          走 `schema.update_message_meta()` 的三道守卫 → 原文一条不删
+                       🔴 真"停住"的收尾在 `llm_routes._gen()` 的 stop 检查点里
+                          （温柔掐：补正常的 finish=stop + [DONE]；断流会让身体换模型重跑）
+
 挂载方式（`deploy/serve.py`）：
 
     import app_ext
@@ -61,6 +70,7 @@
     modules.*.install   注册房间（工作间 …）—— 房间自带路由 + MCP 工具
     archive.install     注册 /app/ext/archive/*（P2-0 导出，只读，不是房间）
     context.install     注册 /app/ext/context/*（P2 ⑧ 上下文管理）
+    generate.install    注册 /app/ext/generate/*（P2 ⑨ 停止/重答/多版本）
 
 每步都是幂等的，重启 N 次结果一致。
 
@@ -78,6 +88,7 @@
     APP_EXT_ROOMS_DISABLED=1  只关房间（门与工作间都不挂；四张表与网关照常）
     APP_EXT_ARCHIVE_DISABLED=1 只关导出（四张表 / 网关 / 房间照常）
     APP_EXT_CONTEXT_DISABLED=1 只关上下文层（注入与端点都不挂，其余照常）
+    APP_EXT_GENERATE_DISABLED=1 只关 ⑨（网关的停止检查点也一起失效，一切照旧）
 
 🔴 **「一个房间挂了不带走别的房间」**：每个房间单独 try —— 工作间注册失败时，
    模型网关必须还在、房子必须照常营业。这条和"整个包吞异常"是同一个原则，
@@ -113,6 +124,9 @@ _ROUTES = [
     "/app/ext/archive/jsonl", "/app/ext/archive/files",
     # 🆕 上下文管理（P2 ⑧）—— 摘要压缩要人触发；status 只读
     "/app/ext/context/summarize", "/app/ext/context/status",
+    # 🆕 停止 / 重答 / 多版本（P2 ⑨）—— 只做最后一条回复
+    "/app/ext/generate/stop", "/app/ext/generate/retry",
+    "/app/ext/generate/reroll", "/app/ext/generate/status",
 ]
 
 
@@ -127,7 +141,7 @@ def register(relay, public_prefix: str = "/") -> dict:
     """
     summary = {"ok": False, "schema": None, "owner": None, "sync": None,
                "routes": None, "gateway": None, "rooms": None, "archive": None,
-               "context": None, "warnings": [], "error": None}
+               "context": None, "generate": None, "warnings": [], "error": None}
 
     if _on("APP_EXT_DISABLED"):
         summary["error"] = "disabled by APP_EXT_DISABLED"
@@ -154,7 +168,13 @@ def register(relay, public_prefix: str = "/") -> dict:
         except Exception as e:
             traceback.print_exc()
             msg = f"{label} 失败（已跳过这一步，其余照常）：{type(e).__name__}: {e}"
-            print(f"[app_ext] ⚠️ {msg}")
+            # 🔴🔴 这一行**必须 GBK 安全**（不许 ⚠️ / ⑨ / ✅ 这类符号）。
+            #    Windows 上子进程 stdout = cp936；而"某一步失败"恰恰是**全新 /data**
+            #    上必然发生的事（③ 会话投影要等 messages 建好）→ 一个 GBK 编不出的符号
+            #    就是 UnicodeEncodeError，**房子直接起不来**，日志还停在半截。
+            #    2026-09-19 实拍：这里原本是 `print(f"[app_ext] ⚠️ {msg}")`，
+            #    空库时房子 100% 起不来（是 workshop_check 的 E8 组抓出来的）。
+            print(f"[app_ext] {msg}")
             summary["warnings"].append(msg)
             return default
 
@@ -237,12 +257,28 @@ def register(relay, public_prefix: str = "/") -> dict:
                 summary["context"] = _context.summary_line()
             _step("上下文管理", _cx)
 
+        # ⑨ 停止 / 重答 / 多版本（P2 ⑨）
+        #    🔴 range 只有"最后一条回复"（Lily 拍板）。它**会写 messages**，但只写
+        #       `meta` 列（truncated / superseded），走 schema.update_message_meta()
+        #       自带的三道守卫 —— 行数不变 / 正文逐字不变 / 只 UPDATE meta。
+        #       真正"停住烧 token"的收尾在 `llm_routes._gen()` 里（本层只置标志）。
+        if _on("APP_EXT_GENERATE_DISABLED"):
+            summary["generate"] = "disabled by APP_EXT_GENERATE_DISABLED"
+        else:
+            from . import generate as _generate
+
+            def _gn():
+                _generate.install(relay, public_prefix)
+                summary["generate"] = _generate.summary_line()
+            _step("停止/重答", _gn)
+
         summary["routes"] = list(_ROUTES)
         summary["ok"] = not summary["warnings"]
 
     except Exception as e:                     # ← 有意捕获全部，见文件顶部
         summary["error"] = f"{type(e).__name__}: {e}"
-        print(f"[app_ext] ⚠️ 初始化失败（房子功能不受影响）：{summary['error']}")
+        # 🔴 同上：这一行也必须是 GBK 安全的（原本是 `⚠️ 初始化失败…`）
+        print(f"[app_ext] 初始化失败（房子功能不受影响）：{summary['error']}")
         traceback.print_exc()
         return summary
 
@@ -266,8 +302,13 @@ def register(relay, public_prefix: str = "/") -> dict:
         print(f"[app_ext] {summary['archive']}")
     if summary.get("context"):
         print(f"[app_ext] {summary['context']}")
+    if summary.get("generate"):
+        print(f"[app_ext] {summary['generate']}")
     if summary["warnings"]:
-        print(f"[app_ext] ⚠️ {len(summary['warnings'])} 个步骤被跳过（房子照常营业）：")
+        # 🔴 同上：GBK 安全（原本是 `⚠️ N 个步骤被跳过…`）。
+        #    这一行只在**有步骤失败时**跑 —— 也就是只在全新 /data 上跑，
+        #    所以它在开发机上"永远正常"，只在第一次部署时炸。
+        print(f"[app_ext] {len(summary['warnings'])} 个步骤被跳过（房子照常营业）：")
         for w in summary["warnings"]:
             print(f"[app_ext]   - {w}")
     return summary

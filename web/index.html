@@ -940,6 +940,17 @@
   @keyframes send-go{ from{ transform: scale(.96); } to{ transform: scale(1); } }
   .floatbtn.send.send-go{ animation: send-go .22s cubic-bezier(.2,.8,.2,1); }
   @media (prefers-reduced-motion: reduce){ .floatbtn.send.send-go{ animation: none; } }
+  /* ⑨ 停止生成：只在"正在生成"时出现，压在发送键左边。刻意比发送键轻一点(0.86 透明度)，
+     因为它是个"打断"的动作，不该抢主按钮的视线。 */
+  .floatbtn.stop{
+    background: var(--send-bg);
+    color:#ffffff;
+    opacity:.86;
+    box-shadow: 0 16px 32px rgba(41, 60, 78, 0.18);
+  }
+  .floatbtn.stop:hover{ color:#ffffff; opacity:1; }
+  .floatbtn.stop:active{ transform: scale(.94); }
+  .floatbtn.stop svg{ width: clamp(14px, 2vw, 18px); height: clamp(14px, 2vw, 18px); }
   .composer .field{
     flex:1 1 auto; display:flex; align-items:center; gap: clamp(4px, 0.8vw, 10px);
     background: var(--field-bg);
@@ -2039,6 +2050,9 @@
     <button class="floatbtn hidden" id="micBtn" aria-label="语音" title="语音">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="21.5"/></svg>
     </button>
+    <button class="floatbtn stop hidden" id="stopBtn" aria-label="停止生成" title="停止">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="2.6" fill="currentColor"/></svg>
+    </button>
     <button class="floatbtn send" id="sendBtn" aria-label="发送">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M6.5 10.5L12 5l5.5 5.5"/></svg>
     </button>
@@ -2382,6 +2396,18 @@
   <div class="msg-menu-scrim" id="msgMenuScrim"></div>
   <!-- 抬起的气泡克隆由 JS 插在这里 -->
   <div class="msg-menu-actions" id="msgMenuActions" role="menu" aria-label="消息操作">
+    <!-- ⑨ 多版本：同一次生成被重答过就有多个版本；点一下往后翻，翻到底回到第一版。
+         标签里的 "i/n" 是从 messages.meta 推出来的（superseded 标在库里的旧那条上），
+         所以刷新页面也认得出来。 -->
+    <button class="msg-act" type="button" data-act="cyclevar" role="menuitem" id="msgActVar" style="display:none">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l-5 7 5 7"/><path d="M15 5l5 7-5 7"/></svg>
+      <span id="msgActVarLabel">1/1</span>
+    </button>
+    <!-- ⑨ 重答：只对"最后一条回复"出现（后端也只认最后一条）。旧的那条不删，标 superseded。 -->
+    <button class="msg-act" type="button" data-act="retry" role="menuitem" id="msgActRetry" style="display:none">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1"/><path d="M20.5 4.5V11h-6.5"/></svg>
+      <span>重答</span>
+    </button>
     <button class="msg-act" type="button" data-act="copy" role="menuitem">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
       <span>Copy</span>
@@ -4357,6 +4383,151 @@ async function apiSend(text, attachments){
   return await r.json();
 }
 
+/* ════════════════════════════════════════════════════════════════
+   ⑨ 停止 / 重答 / 多版本  (P2 第 9 项 · 家装第 11~12 处)
+
+   这三个都是"房子的能力"，网页只负责按按钮：
+     · 停止  → POST /app/ext/generate/stop   房子只置标志；真正掐上游的是网关，
+               而且它**温柔收尾**（补一个正常的 [DONE]）。所以那半条会照常落库、
+               标 truncated，而不会变成"偷偷换个模型重跑一整条"。
+     · 重答  → POST /app/ext/generate/retry  只对**最后一条回复**有效。
+     · 多版本 → 后端只标不删（旧的那条 meta.superseded=true）。版本列表**从
+               sortedMessages() 推**，不另存一份 —— 所以刷新/换设备都认得出来。
+
+   🔴 红线：这里一个字节都不改消息正文，也不删任何一条。翻版本只是"决定哪一条
+      进渲染管道"（见 buildVirtualRows 的 hide 集合）。
+   ════════════════════════════════════════════════════════════════ */
+const stopBtn   = $("#stopBtn");
+const varPick   = new Map();     // 链尾 key -> 正在看第几版（默认 = 最后一版）
+
+// "正在生成" 的判据：relay 推了 typing，或者屏幕上还有没落库的流式草稿。
+function genActive(){ return !!(typingActive || streamDrafts.size > 0); }
+
+function syncGenControls(){
+  if (!stopBtn) return;
+  stopBtn.classList.toggle("hidden", !genActive());
+}
+
+/* ── 多版本：把"同一次生成"的连续回复切成链 ──
+   ⚠️ 关键判据是 **旧那条身上的 `meta.superseded`**，不是"两条挨着的 ai/reply"。
+      为什么：他一次完全可以正常说两句（那就该都显示）。只有"被重答过、后端在手
+      木台上标了 superseded"的旧回复，才说明这是同一次生成的另一个版本。
+   ⇒ 严格满足"前一个是 superseded"才并进同一条链；不满足就断开。 */
+function replyChains(){
+  const chains = [];
+  let cur = [];
+  const isSup = (m) => !!(m.meta && m.meta.superseded);
+  for (const m of sortedMessages()){
+    if (m.from === "ai" && m.kind === "reply"){
+      if (cur.length && isSup(cur[cur.length - 1])) cur.push(m);
+      else { if (cur.length) chains.push(cur); cur = [m]; }
+    } else if (cur.length){ chains.push(cur); cur = []; }
+  }
+  if (cur.length) chains.push(cur);
+  return chains.filter((c) => c.length > 1);     // 只有一版的不算"多版本"
+}
+function chainOf(key){
+  const k = msgKey(key);
+  for (const c of replyChains()){
+    for (const m of c) if (m._key === k) return c;
+  }
+  return null;
+}
+function activeVariantIndex(c){
+  const tailKey = c[c.length - 1]._key;
+  const saved = varPick.get(tailKey);
+  const i = (saved == null) ? c.length - 1 : saved;      // 默认看最新那一版
+  return Math.max(0, Math.min(i, c.length - 1));
+}
+// 除了"正在看的那一版"，链上其余的都从渲染管道里摘掉（不是删除，只是不显示）
+function hiddenVariantKeys(){
+  const hide = new Set();
+  for (const c of replyChains()){
+    if (c.length < 2) continue;
+    const i = activeVariantIndex(c);
+    c.forEach((m, j) => { if (j !== i) hide.add(m._key); });
+  }
+  return hide;
+}
+// "最后一条回复" = 从下往上第一个气泡，且它就是这条 → 和后端 last_turn() 同一口径
+function isLastTurnReply(msg){
+  if (!msg || msg.from !== "ai") return false;
+  const bubbles = sortedMessages().filter((m) => m.kind !== "thinking" && m.kind !== "act");
+  const last = bubbles[bubbles.length - 1];
+  return !!last && String(last._key) === String(msg._key);
+}
+
+/* ── 房子的 ⑨ 端点 ── */
+async function apiGen(path, payload){
+  if (USE_MOCK) return { ok: true, action: path };
+  const r = await fetch(`${API_BASE}/app/ext/generate/${path}`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {}),
+  });
+  if (r.status === 401){ handle401(); throw new Error("401"); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.ok === false){
+    const err = j.error || {};
+    throw new Error((err.code || ("http " + r.status)) + "|" + (err.message || "没成功"));
+  }
+  return j;
+}
+function sayGenError(prefix, e){
+  const parts = String((e && e.message) || e).split("|");
+  showToast(prefix + (parts[1] || parts[0]));
+}
+
+/* 停止：先在本地立刻收（气泡不再增长，手感是"立刻停"），再告诉房子去掐上游。
+   两步都做才算"停住" —— 只做后者，屏幕上还会继续冒字；只做前者，token 照烧。 */
+function doStop(){
+  if (!genActive()){ syncGenControls(); return; }
+  flushStreamDeltas();
+  Array.from(streamDrafts.entries()).forEach(([mapKey, draftKey]) => {
+    streamDrafts.delete(mapKey);
+    streamDeltaBuffers.delete(mapKey);
+    removeMessage(draftKey, { render:false, cache:false });
+  });
+  hideTyping();
+  scheduleRender({ stickToBottom: nearBottom() });
+  syncGenControls();
+  const sid = effectiveApiSession();
+  apiGen("stop", sid ? { session_id: sid } : {}).catch((e) => sayGenError("停止没成功：", e));
+}
+if (stopBtn) stopBtn.addEventListener("click", doStop);
+
+/* 重答：叫身体拿**同一条你说的话**再答一次。旧的那条不删，只标 superseded。
+   ⚠️ 后端会把 superseded 写进库，但那条老消息**不会被重新广播** —— 屏幕上这份还是旧的
+      meta。所以这里成功后**就地补一次本地标记**，不然在刷新之前"换一版"这个按钮不会出现。 */
+async function doRetry(oldKey){
+  const sid = effectiveApiSession();
+  if (!sid){ showToast("先落到一个真实会话，再重答"); return; }
+  if (genActive()){ showToast(AI_NAME + "还在说，先停一下再重答"); return; }
+  showToast("叫" + AI_NAME + "重答…");
+  try{
+    await apiGen("retry", { session_id: sid });
+    const old = oldKey != null ? messageByKey.get(msgKey(oldKey)) : null;
+    if (old){
+      old.meta = { ...(old.meta || {}), superseded: true };
+      invalidateRows();
+      scheduleRender({ stickToBottom: nearBottom() });
+    }
+  }catch(e){
+    sayGenError("重答没成功：", e);
+  }
+}
+
+/* 翻版本：只改"看哪一版"，不动库、不动正文。 */
+function doCycleVariant(key, chain){
+  if (!chain || chain.length < 2) return;
+  const tailKey = chain[chain.length - 1]._key;
+  const next = (activeVariantIndex(chain) + 1) % chain.length;
+  varPick.set(tailKey, next);
+  invalidateRows();
+  scheduleRender({ stickToBottom: nearBottom() });
+  showToast(`第 ${next + 1}/${chain.length} 版`);
+}
+
 async function apiUpload(blob, name, mime){
   if (USE_MOCK){
     return { url: URL.createObjectURL(blob), name: name, size: blob.size, mime: mime, kind: /^image\//.test(mime || "") ? "image" : "file" };
@@ -4929,6 +5100,8 @@ function resetChatState(){
   openActKeys.clear();
   streamDrafts.clear();
   streamDeltaBuffers.clear();
+  varPick.clear();                       // ⑨ 换会话/重载 → "在看第几版"跟着归零
+  syncGenControls();                     // ⑨ 顺手收起停止键（新会话还没有东西在飞）
   if (streamFlushTimer){ clearTimeout(streamFlushTimer); streamFlushTimer = null; }
   if (terminalRenderTimer){ clearTimeout(terminalRenderTimer); terminalRenderTimer = null; terminalRenderQueued = false; }
   freshKeys.clear();
@@ -5080,7 +5253,9 @@ function buildVirtualRows(){
   const rows = [];
   let lastDayKey = null;
   let prevBubble = null;
+  const hideVariants = hiddenVariantKeys();   // ⑨ 一条回复被重答过 → 只放"正在看的那一版"进管道
   sortedMessages().forEach((m) => {
+    if (hideVariants.has(m._key)) return;     // 摘掉 ≠ 删除：库里那条还在，翻版本还能翻回来
     const k = dayKey(m.ts);
     if (k !== lastDayKey){
       lastDayKey = k;
@@ -5700,6 +5875,7 @@ function applyStreamDelta(ev){
   if (ev.done){
     if (existing) removeMessage(key, { render:true, cache:false });
     streamDrafts.delete(mapKey);
+    syncGenControls();                                   // ⑨ 草稿没了 → 收停止键
     return;
   }
 
@@ -5710,6 +5886,7 @@ function applyStreamDelta(ev){
     streamDrafts.set(mapKey, key);
     if (kind === "thinking") openThinkKeys.add(key);
     if (stick && kind === "reply") freshKeys.add(key);
+    syncGenControls();                                   // ⑨ 草稿冒头 → 停止键出现
   }
   hideTyping();
   setMessage({
@@ -5729,6 +5906,7 @@ function applyStreamDelta(ev){
 function showTyping(){
   typingActive = true;
   renderStatus();
+  syncGenControls();                                    // ⑨ 他开口了 → 停止键该出现
   if (window.VoiceCall && window.VoiceCall.isOpen()) window.VoiceCall.peerTyping(true);
   if (typingTimer) clearTimeout(typingTimer);
   typingTimer = setTimeout(hideTyping, 120000);
@@ -5736,6 +5914,7 @@ function showTyping(){
 function hideTyping(){
   typingActive = false;
   renderStatus();
+  syncGenControls();                                    // ⑨ 说完了 → 停止键收起来
   if (window.VoiceCall && window.VoiceCall.isOpen()) window.VoiceCall.peerTyping(false);
   if (typingTimer){ clearTimeout(typingTimer); typingTimer = null; }
 }
@@ -5855,6 +6034,19 @@ function applyReaction(ev){
     openKey = info.key;
     const copyBtn = actions.querySelector('[data-act="copy"]');
     if (copyBtn) copyBtn.style.display = info.msg.text ? "" : "none";   // 纯图无文字 → 只留 Delete
+    // ⑨ 两个新动作都只对 ai 回复有意义：
+    //   · 重答   只在"最后一条回复"上出现（后端 last_turn() 也只认它），生成中不给点
+    //   · 换一版 只有真的存在 ≥2 个版本时才出现，标签显示当前是第几版
+    const retryBtn = actions.querySelector('[data-act="retry"]');
+    const varBtn   = actions.querySelector('[data-act="cyclevar"]');
+    const varLbl   = $("#msgActVarLabel");
+    const isReply  = info.msg.from === "ai" && info.msg.kind === "reply";
+    const chain    = isReply ? chainOf(info.key) : null;
+    const nVar     = chain ? chain.length : 1;
+    const iVar     = chain ? activeVariantIndex(chain) : 0;
+    if (retryBtn) retryBtn.style.display = (isReply && isLastTurnReply(info.msg) && !genActive()) ? "" : "none";
+    if (varBtn)   varBtn.style.display   = (nVar > 1) ? "" : "none";
+    if (varLbl)   varLbl.textContent     = `${iVar + 1}/${nVar}`;
     const r = bubble.getBoundingClientRect();
     // 1) 克隆气泡,固定原位,准备轻微抬起
     cloneEl = bubble.cloneNode(true);
@@ -5962,6 +6154,12 @@ function applyReaction(ev){
     if (!act) return;
     if (act.dataset.act === "copy") doCopy();
     else if (act.dataset.act === "delete") doDelete();
+    else if (act.dataset.act === "retry"){ const k = openKey; close(); doRetry(k); }
+    else if (act.dataset.act === "cyclevar"){
+      const key = openKey, chain = key != null ? chainOf(key) : null;   // close() 会清 openKey，先抓住
+      close();
+      if (chain) doCycleVariant(key, chain);
+    }
   });
   window.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
   window.addEventListener("resize", close);
