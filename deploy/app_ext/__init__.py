@@ -51,6 +51,16 @@
                        ⬜ ⑩-b 蒸馏管道还没做 —— 而且**房子不自己在后台调 LLM 花钱**，
                           所以它将来也必须是**人/动作触发**
 
+    🔭 · 自主活动带回上下文（P2 ⑪，2026-09-21 起）
+    activity.py        **「第三层」**：把"他最近自己做过的事"插成一条 system
+                       （与 ⑧ 同一台机器：**只插不删**、fail-open；窗口 =
+                        「她上次开口之后 → 这次开口之前」，**不加水位线**）
+                       + `GET /app/ext/activity` + `/status` + `POST /preview`（**全只读**）
+                       🔴 注入文本是**已落库的行逐字拼的** —— 一次 LLM 都不调，
+                          所以**不可能编造他没做过的事**（对上"不许编造经历"）
+                       🔴 **写侧不在这里**：身体 POST `/channel/out` `type=activity`
+                          （落库 + SSE 实时推送都是原版白给的，房子不新增第二条写入口）
+
 挂载方式（`deploy/serve.py`）：
 
     import app_ext
@@ -83,6 +93,7 @@
     context.install     注册 /app/ext/context/*（P2 ⑧ 上下文管理）
     generate.install    注册 /app/ext/generate/*（P2 ⑨ 停止/重答/多版本）
     memory.install      注册 /app/ext/memories*（P2 ⑩-a 记忆层，不是房间）
+    activity.install    注册 /app/ext/activity*（P2 ⑪ 自主活动带回上下文，全只读）
 
 每步都是幂等的，重启 N 次结果一致。
 
@@ -102,6 +113,8 @@
     APP_EXT_CONTEXT_DISABLED=1 只关上下文层（注入与端点都不挂，其余照常）
     APP_EXT_GENERATE_DISABLED=1 只关 ⑨（网关的停止检查点也一起失效，一切照旧）
     APP_EXT_MEMORY_DISABLED=1 只关 ⑩-a 的端点（表与 source 缝照常，只是读写端点不挂）
+    APP_EXT_ACTIVITY_DISABLED=1 只关 ⑪（不注入足迹、端点不挂；**卡片照常显示**
+                               —— 卡片走的是原版 /channel/out → 前端，不归本层管）
 
 🔴 **「一个房间挂了不带走别的房间」**：每个房间单独 try —— 工作间注册失败时，
    模型网关必须还在、房子必须照常营业。这条和"整个包吞异常"是同一个原则，
@@ -142,6 +155,8 @@ _ROUTES = [
     "/app/ext/generate/reroll", "/app/ext/generate/status",
     # 🆕 记忆层（P2 ⑩-a）—— 房子的技术缓存，**不挂 /mcp**、**没有 delete**
     "/app/ext/memories", "/app/ext/memories/stats",
+    # 🆕 自主活动带回上下文（P2 ⑪）—— **全只读**；写侧是原版 /channel/out
+    "/app/ext/activity", "/app/ext/activity/status", "/app/ext/activity/preview",
 ]
 
 
@@ -156,7 +171,7 @@ def register(relay, public_prefix: str = "/") -> dict:
     """
     summary = {"ok": False, "schema": None, "owner": None, "sync": None,
                "routes": None, "gateway": None, "rooms": None, "archive": None,
-               "context": None, "generate": None, "memory": None,
+               "context": None, "generate": None, "memory": None, "activity": None,
                "warnings": [], "error": None}
 
     if _on("APP_EXT_DISABLED"):
@@ -303,6 +318,21 @@ def register(relay, public_prefix: str = "/") -> dict:
                 summary["memory"] = _memory.summary_line()
             _step("记忆层", _mm)
 
+        # ⑪ 自主活动带回上下文（P2 ⑪）
+        #    🔴 这是 Lily 09-21 明确要的那一件：「自主醒来的可视化**体现在上下文里**」。
+        #       它**全只读**：写侧是原版 `/channel/out`（落库 + SSE 推送白给），
+        #       本层只做"取窗口 → 拼成一条 system → 插进这次请求"。
+        #    🔴 挂了 = 少一段"我最近做过什么"，说话照常（fail-open）。
+        if _on("APP_EXT_ACTIVITY_DISABLED"):
+            summary["activity"] = "disabled by APP_EXT_ACTIVITY_DISABLED"
+        else:
+            from . import activity as _activity
+
+            def _ac():
+                _activity.install(relay, public_prefix)
+                summary["activity"] = _activity.summary_line()
+            _step("自主活动层", _ac)
+
         summary["routes"] = list(_ROUTES)
         summary["ok"] = not summary["warnings"]
 
@@ -337,6 +367,8 @@ def register(relay, public_prefix: str = "/") -> dict:
         print(f"[app_ext] {summary['generate']}")
     if summary.get("memory"):
         print(f"[app_ext] {summary['memory']}")
+    if summary.get("activity"):
+        print(f"[app_ext] {summary['activity']}")
     if summary["warnings"]:
         # 🔴 同上：GBK 安全（原本是 `⚠️ N 个步骤被跳过…`）。
         #    这一行只在**有步骤失败时**跑 —— 也就是只在全新 /data 上跑，

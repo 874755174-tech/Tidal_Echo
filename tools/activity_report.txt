@@ -1,0 +1,75 @@
+[PASS] A1 嵌套形状 `meta.activity` 读得出来
+[PASS] A2 平铺形状也认（同 kind=act 的先例）
+[PASS] A3 非 dict → None
+[PASS] A4 🔴 普通 meta 不会被误判成活动
+[PASS] A5 只有 footprint（他自己的话）也算一段
+[PASS] A6 actions 全空 + 没有 footprint → None
+[PASS] A7 🔴 坏 started → 丢（不猜、不补）
+[PASS] A8 🔴 坏 state → 丢（不替它编 completed）
+[PASS] A9 🔴 形状合法但未知的取值**原样留**（这是缝）
+[PASS] A10 字符串项也算一行
+[PASS] A11 非 str 非 dict 的项丢掉
+[PASS] A12 空 text / 只有时刻的行丢掉
+[PASS] A13 每行截到 LINE_MAX(90)
+[PASS] A14 每段最多 ACTIONS_MAX(12) 行
+[PASS] A15 norm_at：完整 ISO → 取 HH:MM
+[PASS] A16 minutes_of：真算（14:30→14:39 = 9 分钟）
+[PASS] A17 minutes_of：顺序反了 / 坏值 → None（不硬算成负数）
+[PASS] A18 build_block：`· MM-DD HH:MM 正文`
+[PASS] A19 build_block：footprint 那行写明是「当时留的话」
+[PASS] A20 🔴 不发明内容：输出里的中文只可能是输入原文的子串
+[PASS] A21 空输入 → 空串
+[PASS] A22 inject_text 含 MARK（去重靠它）
+[PASS] A23 正文超 TEXT_MAX(700) 被截（框架话不算进去）
+[PASS] A24 框架话 = 你自己做的、不是别人告诉你的
+[PASS] B1 prev_in_id = 上一条她自己说的话
+[PASS] B2 🔴 窗口内 (after, before) 真取到两段
+[PASS] B3 🔴 边界外的活动**取不到**（before 之上 / after 之下都不行）
+[PASS] B4 返回**升序**（拼文本要正的）
+[PASS] B5 只认 kind='activity'（act / reply 行不会被当活动）
+[PASS] B6 没有上一条 → 不设下界（after=0）
+[PASS] B7 `__legacy__`（无 api_session）也认
+[PASS] B8 超上限取**最近** 3 段
+[PASS] B9 非法形状的活动行被跳过（不进 items）
+[PASS] C1 messages 为空 → 不插
+[PASS] C2 🔴 认不出会话 → session_unknown，body 逐字节不变
+[PASS] C3 窗口里没活动 → nothing_new
+[PASS] C4 🔴 命中：插了一条 system，非 system 部分**逐字节相同**
+[PASS] C5 插在已有 system **之后**（人格 → 摘要 → 足迹）
+[PASS] C6 🔴 ⑧ 与 ⑪ 同时注入 → 摘要在前、足迹在后（从旧到新）
+[PASS] C7 二次调用 → already_present（不重复插）
+[PASS] C8 关掉开关 → disabled（不插）
+[PASS] C9 🔴 会撑爆 system 上限 → 不插（绝不让注入把说话搞挂）
+[PASS] C10 body 形状不对 → fail-open（不抛）
+[PASS] C11 🔴 注入后的 body 真能被 normalize_request 吃下（system 已合并）
+[PASS] C12 last_injection 记了会话与段数
+[PASS] C13 🔴 resolve/apply 是**只读**的：messages 行数与正文指纹不变
+[PASS] D1 三条路由都在 `_ROUTES`
+[PASS] D2 register() 里有第 ⑪ 步（且带逃生开关）
+[PASS] D3 🔴 源码扫描：activity.py **没有任何写库语句**（纯读层）
+[PASS] D4 🔴 不 import mcp / 不注册 MCP 工具（它不是房间）
+[PASS] D5 🔴 不 import llm_gateway / 不调模型（「不许编造」的结构性保证）
+[PASS] D6 🔴 没有「新增活动」的 POST 端点（写侧只该有 /channel/out 一条）
+[PASS] D7 summary_line() 与启动日志 GBK 安全（不许有 GBK 编不出的符号）
+[PASS] D7b summary_line 里提了「不调 LLM / 不写库 / 不挂 MCP」
+[PASS] D8 🔴 llm_routes 的**两条**路径都调了 _inject_activity（complete + chat）
+[PASS] D9 前端契约：kind 分支（buildVirtualRows）
+[PASS] D9 前端契约：卡片渲染函数 makeActivity
+[PASS] D9 前端契约：CSS .row.activity
+[PASS] D9 前端契约：展开态记录 openActivityKeys
+[PASS] D9 前端契约：🔴 会话过滤放行（时间线级事件）
+[PASS] D9 前端契约：🔴 不响铃不朗读
+[PASS] D9 前端契约：🔴 不当成「最后一条回复」
+[PASS] D9 前端契约：估高常量
+[PASS] D10 🔴 providers 有三个中转站槽（relay / relay2 / relay3）
+[PASS] D10b 没配的中转站槽是 `available=false`（灰掉，不是报错）
+[PASS] D10c relay2 的 env 名字与 relay 同构（只差一个数字）
+[PASS] D11 verify_all 已接本套（第 14 套）
+[PASS] D12 无密钥 → 401（三条端点都 fail-closed）
+[PASS] D13 GET /app/ext/activity → 200 且归一化
+[PASS] D14 GET /status → 开关 / 窗口 / limits 都在
+[PASS] D15 POST /preview → 只算不插，回 text（不写库）
+[PASS] D16 /preview 认不出会话 → would_inject=false（不瞎猜）
+[PASS] D17 🔴 没有 PUT / DELETE 路由（405）
+
+共 73 项，通过 73，失败 0

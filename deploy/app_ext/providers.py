@@ -43,6 +43,19 @@ P1 · 模型网关（上半）—— 供应商允许列表 + 适配层
 规划 §4.2 要求"模型名必须用真实调用验证过再写进去" —— 所以：
   · 默认值只是**起点**，不是承诺
   · 加/换模型 = 改一个环境变量，**不需要改代码、不需要重新构建**
+
+## 🆕 三个中转站槽位（2026-09-21 加，Lily 的 E2）
+
+    relay  / relay2 / relay3        ← 三个**完全同构**的槽，env 名字只差一个数字
+
+理由只有一个：**她的主站和备用站都是中转站**，而原来只有一个 `relay` 槽
+→ 备用站**根本配不进来** → "站子突然不响应"只能去 Zeabur 改 env + Redeploy。
+加了槽之后，**切换 = 网页设置页点一下**（`settings.provider_id` 每次请求现读，
+不用重启、不用 redeploy）—— 这正是"前端一键切站"能真正成立的前提。
+
+⚠️ 三个槽都**不是**"自动故障转移"：网关仍是**单供应商**（`resolve()` 只挑一个）。
+   站死了要**人来切**（或者 P3 那侧走 fallback 链）—— 这是有意的，
+   详见 `部署与中转站-站子切换.md`。别把"多槽"理解成"高可用"。
   · 真伪由 `POST /app/ext/providers/probe` 验证
 
 ## 涉及的环境变量（全部只填 Zeabur 面板，不进 git）
@@ -59,7 +72,8 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 # 供应商顺序 = 前端下拉框顺序 = "谁先可用就默认谁"的优先级
-PROVIDER_ORDER = ["deepseek", "siliconflow", "openai", "anthropic", "gemini", "relay"]
+PROVIDER_ORDER = ["deepseek", "siliconflow", "openai", "anthropic", "gemini",
+                  "relay", "relay2", "relay3"]
 
 ANTHROPIC_VERSION = "2023-06-01"
 
@@ -138,6 +152,35 @@ _BASE_DEFS: dict = {
         "format": "openai",
         "models": [],                         # ← 故意为空：站点模型名不可猜
         "note": "需要在服务端配置中转站地址与模型清单",
+    },
+    # 🆕 备用中转站槽位 ×2（2026-09-21 加，Lily 的 E2）
+    #
+    # 🔴 **为什么要有它们**：主站和备用站**都是中转站**时，原来只有一个 `relay` 槽
+    #    → 两个配不进来 → "站子突然不响应"只能去 Zeabur 改 env + Redeploy（她最烦的那种）。
+    #    加槽之后：两个站的 BASE/KEY/MODELS 各填一次（**永久**），
+    #    切换 = 网页设置页点一下（`settings.provider_id` 每次请求现读，不用重启）。
+    #
+    # 🔴 与 `relay` **完全同构**（同一个 format、同一套 env 命名），没有任何特殊逻辑 ——
+    #    唯一的区别是 env 名字里多了个数字：
+    #        PROVIDER_RELAY2_KEY / _BASE / _MODELS
+    #        PROVIDER_RELAY3_KEY / _BASE / _MODELS
+    #    ⚠️ 不填 = 不可用 → 前端下拉框里**灰掉**并写明缺哪个 env（这是**有意的好状态**，
+    #       不是错误）。所以加这两个槽**对没配的人零影响**。
+    "relay2": {
+        "label": "中转站 2（备用）",
+        "endpoint": "",
+        "env_key": "PROVIDER_RELAY2_KEY",
+        "format": "openai",
+        "models": [],
+        "note": "备用中转站：主站挂了就在设置页切过来（不用改 env、不用 redeploy）",
+    },
+    "relay3": {
+        "label": "中转站 3（备用）",
+        "endpoint": "",
+        "env_key": "PROVIDER_RELAY3_KEY",
+        "format": "openai",
+        "models": [],
+        "note": "第二备用中转站：填了就是多一层保险；不填不影响任何东西",
     },
 }
 

@@ -907,7 +907,14 @@ def part_c(tmp: Path) -> None:
             relay and relay[0]["available"] is True and relay[0]["models"] == [MODEL],
             json.dumps(relay, ensure_ascii=False)[:140])
         chk("㊹ 被 PROVIDERS_DISABLED 关掉的供应商不在列表里",
-            all(p["id"] == "relay" for p in provs), str([p["id"] for p in provs]))
+            # 🆕 2026-09-21：允许列表多了备用中转站槽 relay2 / relay3（同族、同 format，
+            #    env 只差一个数字）—— 断言从"只剩 relay"放宽成"只剩 relay 这一族"，
+            #    因为要验的**意图**是"关掉的消失"，不是"列表里恰好只能有一个 id"。
+            all(p["id"].startswith("relay") for p in provs), str([p["id"] for p in provs]))
+        chk("🆕 ㊹b 备用中转站槽在列表里但是**不可用**（灰掉，不是报错）",
+            len([p for p in provs if p["id"] in ("relay", "relay2", "relay3")]) == 3
+            and all(p["available"] is False for p in provs if p["id"] in ("relay2", "relay3")),
+            str([(p["id"], p["available"]) for p in provs]))
 
         # 40) 非流式端点
         st, d = req(base + "/app/ext/llm/complete", method="POST", token=SECRET, body={
@@ -1408,6 +1415,29 @@ def part_e() -> None:
     chk("🔴 76m LLM_EXPOSE_REASONING：0=关 / 1=开 / 不配=默认开（可逆）",
         off is False and on is True and default is True, f"{off} {on} {default}")
 
+    # ⑤ 🆕 E2（2026-09-21）：**所有中转站槽只认 Claude**（Lily 的硬约束）
+    #
+    # 这段守的是**代码里的默认值**：env 里填什么这里看不到（那是部署时的事），
+    # 但**任何人往 `_BASE_DEFS["relay*"]["models"]` 里硬写一个别家模型都会红**。
+    # Lily 原话「我只认 Claude opus 4.6，其他我都不要」—— 理由不是价格：
+    # **换模型 = 换人格**（记忆锚在模型的行为习惯上）。⇒ 加备站只解决"站挂了"，
+    # **绝不引入"换了个模型的他"**。
+    relays = {k: v for k, v in P._BASE_DEFS.items() if str(k).startswith("relay")}
+    chk("🔴 77a 中转站槽共 3 个（relay / relay2 / relay3）",
+        set(relays) == {"relay", "relay2", "relay3"}, str(sorted(relays)))
+    bad = [f"{k}:{m}" for k, v in relays.items() for m in (v.get("models") or [])
+           if "claude" not in str(m).lower()]
+    chk("🔴 77b 中转站槽的内置模型清单里**没有非 Claude**（硬写别家模型即红）",
+        bad == [], str(bad))
+    chk("🔴 77c 三个槽的 env 名只差一个数字（同构，无特殊逻辑）",
+        [relays[k]["env_key"] for k in ("relay", "relay2", "relay3")]
+        == ["PROVIDER_RELAY_KEY", "PROVIDER_RELAY2_KEY", "PROVIDER_RELAY3_KEY"], "")
+    chk("🔴 77d 三个槽 format 全是 openai（共用同一段适配代码）",
+        {relays[k]["format"] for k in relays} == {"openai"}, "")
+    chk("🔴 77e 三个槽内置模型清单都是空（模型名不可猜 → 必须来自 env）",
+        all((v.get("models") or []) == [] for v in relays.values()),
+        str({k: v.get("models") for k, v in relays.items()}))
+
 
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="kaelhome_providers_"))
@@ -1423,7 +1453,7 @@ def main() -> int:
         part_b()
         part_c(tmp)
         part_d()
-        part_e()       # 🆕 76：思考链透传（纯逻辑：帧形状 / 分类 / 开关 / 兼容性）
+        part_e()       # 🆕 76：思考链透传 + 77：中转站三槽只认 Claude（全纯逻辑）
     finally:
         srv.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)

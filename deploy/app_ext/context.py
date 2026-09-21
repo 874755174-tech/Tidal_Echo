@@ -334,6 +334,18 @@ def _insert_index(msgs) -> int:
     return i
 
 
+#: 公开别名 —— 给 ⑪（`activity.py`，自主活动带回上下文）复用。
+#: 🔴 **"插在哪儿"只该有一份实现**：两条 system（摘要 / 足迹）必须插进同一段
+#:    system 区域，否则"后插的那条"会掉到 user 消息后面去 —— 那等于给模型
+#:    看了一条"用户说的话其实是系统提示"。⑪ 与 ⑧ 同源，顺序天然是
+#:    `人格 → 摘要 → 足迹`（都插在 system 尾，先插的在前）。
+insert_index = _insert_index
+
+#: 同上：system 总字符数的口径（对齐 `normalize_request` 的 parts 间 +2）。
+#: ⑪ 也要在"会不会撑爆"这件事上跟 ⑧ 用同一把尺子，否则两边各自"看起来没超"。
+system_chars = _system_chars
+
+
 def session_of(relay, probe_text: str) -> Optional[dict]:
     """从"一条用户消息的原文"反查它挂在哪个会话上。**不猜。**
 

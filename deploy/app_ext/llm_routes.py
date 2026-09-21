@@ -117,6 +117,23 @@ def _inject(relay, body: dict) -> dict:
         return {"ok": False, "injected": False, "reason": f"{type(e).__name__}: {e}"}
 
 
+def _inject_activity(relay, body: dict) -> dict:
+    """⑪ 自主活动层：把「你最近自己的经历」插进 `body["messages"]`（就地）。**fail-open**。
+
+    🔴 与 ⑧（摘要）**同一台机器、同一个位置**，只是插的东西不同、MARK 不同：
+       ⑧ 是"我们以前说过什么"，⑪ 是"我最近自己做了什么"（Lily 09-21 要的"第三层"）。
+       插完 system = 人格 → 摘要 → 足迹，而 `messages` 数组与没注入时**逐字节相同**。
+    🔴 顺序：必须在 ⑧ **之后**调 —— 两条都插在 system 段尾部，先插的在前，
+       于是顺序天然是"从旧到新"（以前的对话 → 最近的经历）。
+    🔴 出任何问题都原样放行（确定性纯拼接，一次 LLM 都不调 —— 见 `activity.py`）。
+    """
+    try:
+        from . import activity as A
+        return A.apply(relay, body)
+    except Exception as e:              # 有意兜住全部（见 `activity.py` 文件头）
+        return {"ok": False, "injected": False, "reason": f"{type(e).__name__}: {e}"}
+
+
 def _G9():
     """⑨ 停止/重答模块（局部导入）。拿不到 → None，调用方一律跳过。"""
     try:
@@ -293,6 +310,7 @@ def install(relay, public_prefix: str = "/") -> None:
         """非流式。body 里的 stream 一律忽略 —— 这个端点的语义就是非流式。"""
         pid, mid = _pick(body)
         _inject(relay, body)          # ⑧：只插摘要，不裁历史（fail-open，见上面）
+        _inject_activity(relay, body)  # ⑪：再插"他最近做过的事"（同样只插不删）
         try:
             req = P.normalize_request({**body, "stream": False})
             out = await G.complete(pid, mid, req)
@@ -317,6 +335,7 @@ def install(relay, public_prefix: str = "/") -> None:
         """流式（OpenAI 兼容 SSE）。"""
         pid, mid = _pick(body)
         _inject(relay, body)          # ⑧：只插摘要，不裁历史（fail-open，见上面）
+        _inject_activity(relay, body)  # ⑪：再插"他最近做过的事"（同样只插不删）
 
         # 🔴 开流之前把能验的都验完 —— 这时还能回干净的 4xx
         try:
