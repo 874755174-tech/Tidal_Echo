@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-P0 地基验收 —— 四张表 / 身份层 / 红线
+P0 地基验收 —— 五张表 / 身份层 / 红线
 ==========================================================
 
 覆盖三层：
@@ -225,14 +225,15 @@ def main() -> int:
             msg_rows_before == 7 and tables_before == {"messages", "push_subscriptions"},
             f"rows={msg_rows_before} tables={sorted(tables_before)}")
 
-        # 1) 补齐 4 张表
+        # 1) 补齐 5 张表
         rep = S.ensure_schema(R)
-        chk("① 老库升级补齐 4 张表",
-            set(rep["created"]) == {"users", "settings", "sessions", "memories"},
+        chk("① 老库升级补齐 5 张表",
+            set(rep["created"]) == {"users", "settings", "sessions", "memories",
+                                    "usage_log"},
             str(rep["created"]))
         names_after = table_names(db_path)
-        chk("① 库里现在有 6 张表",
-            {"users", "settings", "sessions", "memories"} <= names_after,
+        chk("① 库里现在至少有 7 张表",
+            {"users", "settings", "sessions", "memories", "usage_log"} <= names_after,
             str(sorted(names_after)))
 
         # 2) 🔴 messages 红线

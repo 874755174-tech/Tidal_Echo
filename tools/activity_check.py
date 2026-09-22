@@ -159,7 +159,7 @@ def client_for(relay):
 
 def make_db(tmp: str, name: str = "fresh") -> FakeRelay:
     """全新库：先建 `messages`（真实房子里它是 `backend/app.py:init_db()` 建的），
-    再走房子的正常初始化（四张表 + 播种房主）。"""
+    再走房子的正常初始化（五张表 + 播种房主）。"""
     from app_ext import schema as S, identity as I
     db = os.path.join(tmp, name + ".db")
     conn = sqlite3.connect(db)

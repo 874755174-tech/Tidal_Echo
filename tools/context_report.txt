@@ -43,7 +43,7 @@
 [PASS] D2 `_ROUTES` 两条都在
 [PASS] D3 🔴 **不是房间**：context.py 不 import mcp
 [PASS] D4 🔴 原文不删：context.py 里没有对 messages 的写语句
-[PASS] D5 🔴 v2 老库起服务后自动补 `summary_upto` 且 user_version=3
+[PASS] D5 🔴 v2 老库起服务后自动补 `summary_upto`（版本被抬到 ≥ 3）
 [PASS] D6 🔴 上一版的 `settings.provider_id` 迁移仍在
 [PASS] D7 逃生开关在（`APP_EXT_CONTEXT_DISABLED`）
 [PASS] D8 verify_all 里接了本套

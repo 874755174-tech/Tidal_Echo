@@ -1108,8 +1108,10 @@ def part_d(tmp: Path, log_path: Path) -> None:
     #    —— 一次有意的版本升级要留下一次有意的改动记录。
     #    ⚠️ 2026-09-20：⑩-a 给 `memories` 加 `source` → 3 → 4，本行随之更新
     #       （这是"有意升级"的正常流程，不是本套坏了）。
-    chk("D9 schema 版本 = 4（⑩-a 的 memories.source；有意升级就来改这里）",
-        _sch.SCHEMA_VERSION == 4, f"={_sch.SCHEMA_VERSION}")
+    #    ⚠️ 2026-09-22：usage 记账加第 5 张表 `usage_log` → 4 → 5，本行随之更新
+    #       （同上：有意升级留一次有意的改动记录）。
+    chk("D9 schema 版本 = 5（usage 记账的 usage_log 表；有意升级就来改这里）",
+        _sch.SCHEMA_VERSION == 5, f"={_sch.SCHEMA_VERSION}")
     chk("D10 逃生开关在（APP_EXT_GENERATE_DISABLED）",
         "APP_EXT_GENERATE_DISABLED" in init_src
         and "APP_EXT_GENERATE_DISABLED" in src, "")

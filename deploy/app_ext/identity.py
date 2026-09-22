@@ -25,7 +25,7 @@ P0 · 身份层 —— users + settings
     POST /app/ext/login       → 用密钥换身份信息（证明"你是谁"）
     GET  /app/ext/settings    → 读设置
     PUT  /app/ext/settings    → 写设置（白名单字段）
-    GET  /app/ext/schema      → 诊断：四张表在不在、版本号、行数
+    GET  /app/ext/schema      → 诊断：五张表在不在、版本号、行数
 
 前四个端点**各自调用 `relay.check_auth(request)`**（fail-closed，
 不依赖任何中间件顺序 —— 沿用 `sessions_manage.py` 的教训）。
@@ -398,7 +398,7 @@ def install(relay, public_prefix: str = "/") -> None:
 
     @relay.app.get(base + "/schema")
     async def _schema_ep(request: Request):
-        """诊断用：四张表在不在、版本号、行数。前端设置页也能显示这个。"""
+        """诊断用：五张表在不在、版本号、行数。前端设置页也能显示这个。"""
         relay.check_auth(request)
         rep = _schema.schema_report(relay)
         rep["users"] = list_users(relay)

@@ -1,0 +1,80 @@
+[PASS] A1 OpenAI：prompt/completion 就位
+[PASS] A2 OpenAI：cache_read 从 prompt_tokens_details.cached_tokens 取到
+[PASS] A3 🔴 OpenAI：cache_in_prompt=1（cached 是 prompt 的子集 → 分母用 prompt）
+[PASS] A4 Anthropic：input_tokens → prompt_tokens
+[PASS] A5 Anthropic：cache_creation_input_tokens → cache_write_tokens
+[PASS] A6 🔴 Anthropic：cache_in_prompt=0（三者并列 → 分母要相加）
+[PASS] A7 DeepSeek：prompt_cache_hit_tokens → cache_read_tokens
+[PASS] A8 🔴 DeepSeek：prompt_cache_miss_tokens **不许**被当成 cache_write
+[PASS] A9 Gemini：promptTokenCount/candidatesTokenCount 就位
+[PASS] A10 Gemini：cachedContentTokenCount → cache_read（分母含缓存）
+[PASS] A11 🔴 捡不到 = None，**不是 0**（0 与'没说'必须分开）
+[PASS] A12 🔴 total_tokens **只在'上游给了'时才有**（我们不替它算）
+[PASS] A13 🔴 bool 不算数（`True` 是 int 子类，不能变成 1 个 token）
+[PASS] A14 纯数字字符串收（'123' → 123）；带单位的不猜（'1.2k' → None）
+[PASS] A15 空 / None / 垃圾 → shape=unknown 且一个数都没有
+[PASS] A16 只认出形状、一个数都没有 → usable=False（不许撑高 coverage）
+[PASS] A17 嵌在 message.usage 里的（部分中转站）也能归一
+[PASS] B0 🔴 老库（v4）升上来：**只多一张 usage_log**，版本推到 5
+[PASS] B0b 🔴 升级一行老数据都没动（记忆还在、正文未改、消息行数与内容不变）
+[PASS] B0c 幂等：再跑一次不新建任何表
+[PASS] B0d 新库：版本 = 5，五张表齐（含 usage_log）
+[PASS] B1 🔴 record 真的写了一行（且判定为有账单）
+[PASS] B2 读回来的字段与写入一致（model / tokens / ms / chars_out / session）
+[PASS] B3 🔴 raw 存了上游原文（一个字段不丢：嵌套的 details 也在）
+[PASS] B4 🔴 空 usage → ok=0（不是不写行）+ 自动补理由
+[PASS] B5 掐断（stopped）也写一行 —— 缺口**看得见**
+[PASS] B6 🔴 ok=0 且没给理由 → 自动落 `no_usage_in_payload`（不留 NULL）
+[PASS] B7 🔴 所有 ok=0 的行**都带理由**（没有 None —— gaps 分组才读得出来）
+[PASS] B8 🔴 record 是 fail-open：写不进去也**不抛**，只回 ok=False
+[PASS] B9 非法参数（ms 是字符串）不炸，落 NULL
+[PASS] B10 🔴🔴 users 表**空着**也能记账（外键会让账整批静默丢失）
+[PASS] B11 🔴 recent 默认**不含 raw**（要看原文得显式 ?raw=1）
+[PASS] C1 calls / calls_with_usage / coverage 三项对
+[PASS] C2 🔴 命中率按口径分行求和（手算对账 2100/2530）
+[PASS] C3 🔴 分口径有区分力：混用口径会算出 >1 的命中率（1.3125）
+[PASS] C4 token 总量（prompt/completion/cache_read）按行相加
+[PASS] C5 自白字段：多少行的 prompt / cache_read 上游压根没报
+[PASS] C6 gaps 按 note 分组（stopped / client_disconnect 各 1）
+[PASS] C7 by_model 分组：两个模型，调用多的（b=3）排前面
+[PASS] C8 by_day 按 UTC+8 切天（就是今天）
+[PASS] C9 🔴 cost 是 None + 说明（本层不算钱：单价会漂，不在这里猜）
+[PASS] C10 🔴🔴 空库：命中率 = None（**不是 0** —— 0 会被读成'缓存完全没命中'）
+[PASS] C11 🔴 上游从没报过 cache_read → 命中率仍是 None（数据不足 ≠ 0 分）
+[PASS] C12 🔴🔴 上游明说 cache_read=0 → 命中率 = 0.0（**与 None 严格区分**）
+[PASS] C13 `days=0` = 不限时间（全部都在）
+[PASS] D1 无密钥 → 401（fail-closed）
+[PASS] D2 带密钥 → summary 200 且 ok=True
+[PASS] D3 recent 200 / status 200
+[PASS] D4 🔴 响应里**没有 raw 字段**（默认不外泄上游原文）
+[PASS] D5 `?raw=1` 才给原文
+[PASS] D6 🔴🔴 **没有写入口**：POST /usage/summary → 405（账不能被外部伪造）
+[PASS] D7 三个端点都没有 PUT / DELETE
+[PASS] D8 `?limit=` 夹紧（99999 → 500；0 → 1）
+[PASS] D9 `?days=` 夹紧（99999 → 3650）
+[PASS] D10 `?days=abc` 不炸（回落 7）
+[PASS] D11 status 回答'记账自己在不在工作'（行数 / 口径分布）
+[PASS] D12 三条路由都在 __init__._ROUTES 里
+[PASS] D13 __init__ 里有第 ⑫ 步（usage 记账）与逃生开关
+[PASS] D14 🔴 usage.py **不 import mcp**（它不挂 MCP 门 —— 那是我的账，不是给他的）
+[PASS] D15 🔴 usage.py 里没有任何 POST / PUT / DELETE 装饰器
+[PASS] D16 🔴 源码扫描：usage 这一层只碰 usage_log（不写 messages / 不 DROP / 不 ALTER）
+[PASS] D17 🔴 usage_log 的 user_id **故意不带外键**（外键 = 会静默吞账的开关）
+[PASS] D18 verify_all 已接本套
+[PASS] D19 🔴 开关打开时：端点**不挂**（404），且 summary 里点名是开关关的
+[PASS] D20 🔴 '能力没了 ≠ 数据没了'：表照建（usage_log 仍在 schema 报告里）
+[PASS] D21 🔴 summary_line() GBK 安全（Windows 启动日志会打它）
+[PASS] D22 🔴 usage.py / usage_store.py 的 print 里没有 GBK 编不出的符号
+[PASS] E1 🔴🔴 流式 openai 出站带 stream_options.include_usage（不带就永远收不到账单）
+[PASS] E2 🔴 非流式**不加** stream_options（它本来就带回 usage，加了反而给某些站找麻烦）
+[PASS] E3 🔴 `LLM_STREAM_USAGE=0` → 出站 body 回到改动前（无 stream_options，一键可退）
+[PASS] E4 `=1` / 空 / 其他值 = 要（默认开）
+[PASS] E5 🔴 Anthropic 格式**不**加 stream_options（它原生就带账单，且不认这个字段）
+[PASS] F1 🔴🔴 流内 usage 是 **update 合并**（Anthropic 分两帧发，覆盖会丢一半）
+[PASS] F2 两帧各捡到一半（message_start 给输入 / message_delta 给输出）
+[PASS] F3 合并之后两半都在（正是 `usage.update` 那条改动的意义）
+[PASS] F4 🔴 四条收尾路径都记账：complete / end / stopped / upstream_error
+[PASS] F5 🔴 下游断开（手机锁屏）也有兜底记账 + 防重记标志
+[PASS] F6 🔴 `_bill` 是 fail-open（记账不许把说话搞挂）
+
+共 78 项，通过 78，失败 0

@@ -136,7 +136,7 @@ P1 模型网关验收　172/172 通过
 ✅ 🔴 ㊽ 回归：P0 的 /app/ext/me 仍 200
 ✅ 🔴 ㊾ 回归：原版 /app/history 仍 200
 ✅ 🔴 schema 版本已到位（迁移生效 = 跟 SCHEMA_VERSION 一致）
-✅ 🔴 messages 行数未变（2 条种子）+ 四张表齐
+✅ 🔴 messages 行数未变（2 条种子）+ 五张表齐
 ✅ 🔴 51 别名无密钥 → 401（fail-closed）
 ✅ 🔴 51 少一层 v1 的别名无密钥 → 401
 ✅ 🔴 52 别名 stream=True → SSE 逐段 + 拼接正确

@@ -195,6 +195,26 @@ def _disabled_ids() -> set:
     return {x.strip().lower() for x in raw.split(",") if x.strip()}
 
 
+def _stream_usage_on() -> bool:
+    """流式请求要不要**显式索要** usage（P2 记账要用）。默认**要**。
+
+    🔴 为什么必须有这一步：OpenAI 兼容协议里，**流式响应的 usage 默认不给** ——
+       要在请求体里带 `stream_options: {"include_usage": true}`，上游才会在
+       最后一帧补上账单。不带它 → 收不到 → 记账会变成**一个永远空转的空壳**
+       （表建了、代码接了、`ok=0` 永远是 100%，却看不出哪里错）。
+
+    开关：`LLM_STREAM_USAGE=0` → 不索要，出站 body **逐字节回到改动前**。
+      为什么要留这个开关：极少数古董站/自建网关对**不认识的字段直接 400**，
+      跟 `_effort_payload` 那条是同一个坑。默认开 = 主流站（DeepSeek /
+      SiliconFlow / one-api 系中转站）都认；出事了**一个 env 就能退回**，
+      不用改代码不用回滚版本。
+    """
+    v = _env("LLM_STREAM_USAGE").lower()
+    if not v:
+        return True
+    return v not in ("0", "false", "no", "off")
+
+
 def _view(provider_id: str) -> dict:
     """把 env 叠加到定义表上，得到这个供应商的**完整**视图（含 key）。
 
@@ -572,6 +592,15 @@ def adapt(provider_id: str, model: str, req: dict) -> tuple:
             body["top_p"] = top_p
         if stop:
             body["stop"] = stop
+        # 🆕 P2 usage 记账（2026-09-22）：**流式必须开口要，上游才给账单**。
+        #    为什么默认开、为什么留开关，见 `_stream_usage_on()` 的 docstring。
+        # 🔴 只加在**流式**上：非流式的 usage 本来就随响应体一起回来，加了反而多余
+        #    （而且有些站对非流式带 stream_options 会报错）。
+        # 🔴 这里是**直接赋值**而不是 setdefault：这个 body 完全由本函数构造，
+        #    没有任何"调用方可能已经传了"的路径 —— 写 setdefault 只会让人以为
+        #    "调用方传了就会保留"，而那条路根本不存在（那是伪安全）。
+        if stream and _stream_usage_on():
+            body["stream_options"] = {"include_usage": True}
         # effort：**只有配了 PROVIDER_<UP>_EFFORT_PARAM 才会出现在这里**
         ef_field, ef_val = _effort_payload(p["id"], params.get("effort") or "")
         if ef_field and ef_val is not None:

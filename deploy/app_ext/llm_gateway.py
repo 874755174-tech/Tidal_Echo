@@ -177,7 +177,15 @@ async def stream_chat(
                             await _emit(on_text, piece)
                     u = _pick_usage(payload)
                     if u:
-                        usage = u
+                        # 🆕 2026-09-22（P2 usage 记账）：**合并**，不是覆盖。
+                        #
+                        # 🔴 覆盖会**静默丢掉半个账单**：Anthropic 把账单拆在两个事件里发 ——
+                        #    `message_start` 只带 `input_tokens`，`message_delta` 只带 `output_tokens`。
+                        #    覆盖 = 只剩最后到的那个（通常是小头的输出），**输入那半永久消失**，
+                        #    而且从外面完全看不出来（usage 不为空、只是少一半）。
+                        # 🔴 OpenAI 形状只在最后一帧发一个完整 usage → update 与覆盖**等价**，
+                        #    所以这条改动对主渠道零影响（验收里有专门一条守这件事）。
+                        usage.update(u)
         except httpx.TimeoutException as e:
             raise GatewayError("timeout", f"连 {p['label']} 超时：{type(e).__name__}", 504)
         except httpx.HTTPError as e:

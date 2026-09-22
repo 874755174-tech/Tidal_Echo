@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-房子扩展包 —— P0 地基（四张表 + 身份层）+ P1 模型网关
+房子扩展包 —— P0 地基（五张表 + 身份层）+ P1 模型网关
 ==========================================================================
 
 ## 这个包包什么
@@ -61,6 +61,16 @@
                        🔴 **写侧不在这里**：身体 POST `/channel/out` `type=activity`
                           （落库 + SSE 实时推送都是原版白给的，房子不新增第二条写入口）
 
+    🧾 · usage 记账（P2，2026-09-22 起）
+    usage_store.py     **把上游每次调用回来的 token 账单收下**：四家形状归一成
+                       统一 5 个数（OpenAI / Anthropic / DeepSeek / Gemini）+
+                       命中率（分母按口径分）+ **捡不到也留痕**（`ok=0`）
+                       + `GET /app/ext/usage/{summary,recent,status}`（**全只读**）
+    usage.py           🔴 账单**唯一**写入口 = 网关内联（`llm_routes` 调 `record()`）
+                       ⇒ **没有 POST 写路由**：能发请求就能伪造账单，结构性地不允许
+                       🔴 不挂 MCP 门（跟 `memories` 同一条边界：那是我看的账，
+                          不是给他的记忆）· 不算钱（单价会漂，不在这里猜）
+
 挂载方式（`deploy/serve.py`）：
 
     import app_ext
@@ -69,7 +79,7 @@
 ## 🔴 最重要的设计原则：**这层挂了，房子必须照常营业**
 
 第一阶段（聊天链路）已经 30/30 + 40/40 + 40/40 验收通过。
-四张表和模型网关都是**新能力**，不是**新的地基条件** —— 它们出任何问题，
+五张表和模型网关都是**新能力**，不是**新的地基条件** —— 它们出任何问题，
 都不允许影响"发消息 → 收回复 → 记录不丢"这条已经跑通的路。
 
 所以 `register()` **吞掉自己的所有异常**：
@@ -94,6 +104,7 @@
     generate.install    注册 /app/ext/generate/*（P2 ⑨ 停止/重答/多版本）
     memory.install      注册 /app/ext/memories*（P2 ⑩-a 记忆层，不是房间）
     activity.install    注册 /app/ext/activity*（P2 ⑪ 自主活动带回上下文，全只读）
+    usage.install       注册 /app/ext/usage*（P2 usage 记账，**全只读**）
 
 每步都是幂等的，重启 N 次结果一致。
 
@@ -107,14 +118,16 @@
 
     APP_EXT_DISABLED=1        整个包关掉（回到 P0 之前的状态）
     APP_EXT_SYNC_ON_START=0   启动时不做会话投影
-    APP_EXT_LLM_DISABLED=1    只关模型网关（四张表照常）
-    APP_EXT_ROOMS_DISABLED=1  只关房间（门与工作间都不挂；四张表与网关照常）
-    APP_EXT_ARCHIVE_DISABLED=1 只关导出（四张表 / 网关 / 房间照常）
+    APP_EXT_LLM_DISABLED=1    只关模型网关（五张表照常）
+    APP_EXT_ROOMS_DISABLED=1  只关房间（门与工作间都不挂；五张表与网关照常）
+    APP_EXT_ARCHIVE_DISABLED=1 只关导出（五张表 / 网关 / 房间照常）
     APP_EXT_CONTEXT_DISABLED=1 只关上下文层（注入与端点都不挂，其余照常）
     APP_EXT_GENERATE_DISABLED=1 只关 ⑨（网关的停止检查点也一起失效，一切照旧）
     APP_EXT_MEMORY_DISABLED=1 只关 ⑩-a 的端点（表与 source 缝照常，只是读写端点不挂）
     APP_EXT_ACTIVITY_DISABLED=1 只关 ⑪（不注入足迹、端点不挂；**卡片照常显示**
                                —— 卡片走的是原版 /channel/out → 前端，不归本层管）
+    APP_EXT_USAGE_DISABLED=1  只关 usage 端点（**网关照常记账、表照常建**，
+                              只是看不见 —— 「能力没了 ≠ 数据没了」）
 
 🔴 **「一个房间挂了不带走别的房间」**：每个房间单独 try —— 工作间注册失败时，
    模型网关必须还在、房子必须照常营业。这条和"整个包吞异常"是同一个原则，
@@ -157,6 +170,8 @@ _ROUTES = [
     "/app/ext/memories", "/app/ext/memories/stats",
     # 🆕 自主活动带回上下文（P2 ⑪）—— **全只读**；写侧是原版 /channel/out
     "/app/ext/activity", "/app/ext/activity/status", "/app/ext/activity/preview",
+    # 🆕 usage 记账（P2）—— **全只读**；写侧只有网关内联一条（没有 POST 写路由）
+    "/app/ext/usage/summary", "/app/ext/usage/recent", "/app/ext/usage/status",
 ]
 
 
@@ -172,11 +187,11 @@ def register(relay, public_prefix: str = "/") -> dict:
     summary = {"ok": False, "schema": None, "owner": None, "sync": None,
                "routes": None, "gateway": None, "rooms": None, "archive": None,
                "context": None, "generate": None, "memory": None, "activity": None,
-               "warnings": [], "error": None}
+               "usage": None, "warnings": [], "error": None}
 
     if _on("APP_EXT_DISABLED"):
         summary["error"] = "disabled by APP_EXT_DISABLED"
-        print("[app_ext] 已按 APP_EXT_DISABLED 关闭，跳过四张表 / 身份层 / 模型网关")
+        print("[app_ext] 已按 APP_EXT_DISABLED 关闭，跳过五张表 / 身份层 / 模型网关")
         return summary
 
     def _step(label: str, fn, default=None):
@@ -189,7 +204,7 @@ def register(relay, public_prefix: str = "/") -> dict:
            serve.py 的 **import 期，比 lifespan 早**。
 
            于是"第一次部署到空的 /data"时：③ 抛 `no such table: messages`
-           → 旧写法的 `except` 一把兜住 → **四张表装了、身份层 / 模型网关 /
+           → 旧写法的 `except` 一把兜住 → **五张表装了、身份层 / 模型网关 /
            房间层全都没装**，而日志只说"房子功能不受影响"（这话对聊天是对的，
            对整个 P0/P1 层是假的）。等有人聊过一次、messages 建好了，
            下次重启就一切正常 —— **自愈的 bug 最阴：它只在第一次出现。**
@@ -333,6 +348,21 @@ def register(relay, public_prefix: str = "/") -> dict:
                 summary["activity"] = _activity.summary_line()
             _step("自主活动层", _ac)
 
+        # ⑫ usage 记账（P2）
+        #    🔴 本步只挂**只读端点**。真正的写不在这一步、也不在 HTTP 面上 ——
+        #       它是网关内联的：`llm_routes` 每次真实上游调用后调 `usage_store.record()`。
+        #       所以这一步挂了 = 账看不见了，**但账照记**（表在 ① 建、写在网关）。
+        if _on("APP_EXT_USAGE_DISABLED"):
+            summary["usage"] = "disabled by APP_EXT_USAGE_DISABLED"
+        else:
+            from . import usage as _usage
+            from . import usage_store as _ustore
+
+            def _us():
+                _usage.install(relay, public_prefix)
+                summary["usage"] = _ustore.summary_line()
+            _step("usage 记账端点", _us)
+
         summary["routes"] = list(_ROUTES)
         summary["ok"] = not summary["warnings"]
 
@@ -369,6 +399,8 @@ def register(relay, public_prefix: str = "/") -> dict:
         print(f"[app_ext] {summary['memory']}")
     if summary.get("activity"):
         print(f"[app_ext] {summary['activity']}")
+    if summary.get("usage"):
+        print(f"[app_ext] {summary['usage']}")
     if summary["warnings"]:
         # 🔴 同上：GBK 安全（原本是 `⚠️ N 个步骤被跳过…`）。
         #    这一行只在**有步骤失败时**跑 —— 也就是只在全新 /data 上跑，

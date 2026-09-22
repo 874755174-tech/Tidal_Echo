@@ -946,7 +946,7 @@ def part_e(tmp: Path) -> None:
         log = log_path.read_text(encoding="utf-8", errors="replace")
         chk("E8a 空库上：会话投影被跳过，而且**日志说了出来**",
             "会话投影 失败（已跳过这一步" in log, "")
-        chk("E8b 空库上：四张表照样建好", "P0 地基就绪" in log and "schema v" in log)
+        chk("E8b 空库上：五张表照样建好", "P0 地基就绪" in log and "schema v" in log)
         chk("E8c 🔴 空库上：门与房间**照样装上**（这是回归锁 —— "
             "旧写法会让整个 P0/P1/房间层一起装不上）",
             "工作间就绪" in log and "MCP 门就绪" in log, "")

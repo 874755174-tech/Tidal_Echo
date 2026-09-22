@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-P0 · 地基 —— 四张表（users / settings / sessions / memories）
+P0 · 地基 —— 五张表（users / settings / sessions / memories / usage_log）
 ==========================================================================
 
 ## 这个文件解决什么
@@ -17,7 +17,7 @@ Tidal_Echo 原版只有两张表：`messages`（含 `meta` JSON）和 `push_subs
   · 长期记忆没有家
     → P2 的滚动摘要、记忆提炼无处落
 
-本文件把四个载体建起来。**只建表，不放任何功能逻辑。**
+本文件把五个载体建起来。**只建表，不放任何功能逻辑。**
 
 ## 🔴 三条硬约束
 
@@ -55,7 +55,8 @@ Tidal_Echo 原版只有两张表：`messages`（含 `meta` JSON）和 `push_subs
    | v1 | 四张表本身 | P0 |
    | v2 | `settings.provider_id` | P1 模型网关 |
    | v3 | `sessions.summary_upto` | P2 ⑧ 上下文管理 |
-   | **v4** | **`memories.source`** | **P2 ⑩-a（书房等的"缝"）** |
+   | v4 | `memories.source` | P2 ⑩-a（书房等的"缝"） |
+   | **v5** | **`usage_log` 表（第 5 张）** | **P2 · usage 记账** |
 
    ⚠️ **v4 这一格曾经被规格预写成 "v2 → v3"** —— 因为规格写的时候
    v2/v3 还没被占。**规格里的版本号会漂**，动 schema 前先读这里的现值。
@@ -74,7 +75,7 @@ Tidal_Echo 原版只有两张表：`messages`（含 `meta` JSON）和 `push_subs
   放在 `deploy/` 下则它永远是空的，红线语义保持干净。
 
   而且 `deploy/` 事实上**已经**是我们这一层：`sessions_fallback.py`、
-  `sessions_manage.py` 都不是 nginx 的活，是业务兜底。四张表和它们放一起，
+  `sessions_manage.py` 都不是 nginx 的活，是业务兜底。五张表和它们放一起，
   比"一半 backend 一半 deploy"更清楚。
 
   （本节结论已于 2026-09-14 回填 `架构与产品路线规划.md` §3.2。）
@@ -97,9 +98,13 @@ from typing import Optional
 #       messages，书房那种"读一本书沉淀下来的"没有对应消息 → 没有这一列就
 #       永久"来源不明"。🔴 定死这时**表还是空的** → 加列零风险；
 #       一旦开写，后加的列**无法回填** —— 2026-09-20）
-SCHEMA_VERSION = 4
+#   5 → usage_log 表（P2 · usage 记账：上游每次真实调用回来的 token 账单。
+#       网关早就把 usage 从流里"捡"出来了，但**只塞进 SSE 帧就没了** ——
+#       于是我们既看不到消耗，更看不到缓存命中。这是**只追加**的账本，
+#       不是状态表 —— 2026-09-22）
+SCHEMA_VERSION = 5
 
-# 四张表的建表语句。
+# 五张表的建表语句。
 # ⚠️ 顺序有依赖：users 先建，其余三张都 REFERENCES users(id)。
 # ⚠️ 全部 IF NOT EXISTS —— 重复执行必须无害。
 DDL_TABLES = [
@@ -175,6 +180,60 @@ DDL_TABLES = [
             last_used  TEXT
         )
     """),
+
+    # ⑤ 账本层：上游每次真实调用的 token 账单（P2 · usage 记账，2026-09-22）
+    #
+    # 🔴 它是**只追加的事件流**，不是状态表 —— 所以：
+    #    · 主键用 `INTEGER PRIMARY KEY`（rowid 别名，天然递增），**不写 AUTOINCREMENT**
+    #      （账本只插不删，不需要防 id 重用，也就没必要多养一张 `sqlite_sequence`）；
+    #    · 唯一没有 `IF NOT EXISTS` 之外约束的表：一行 = 一次真实上游调用。
+    #
+    # 🔴 `ok` 这一列是这张表的灵魂：**捡不到 usage 也要写一行**（`ok=0` + `note`）。
+    #    如果"没账单"就干脆不写，那么"哪次调用没记账"就永远查不出来 ——
+    #    表面上是"账本里没有坏数据"，实际上是**账本自己在说谎**（缺口不可见）。
+    #
+    # 🔴 `raw` 存上游 usage 的 **JSON 原文**。归一化只挑我们认识的 5 个数，
+    #    但中转站随时可能多给一个计费维度（reasoning tokens / 音频 / 缓存分级…）——
+    #    只存挑出来的数 = 那个维度永久丢失。**先原样收下，解读放到读的时候做。**
+    # 🔴 `user_id` **故意不加外键**（这是唯一一张这么做的表，理由值得写下来）。
+    #    2026-09-22 冒烟实拍：写上 `REFERENCES users(id)` 之后，只要记一笔账时
+    #    users 表里还没有那一行（比如全新 /data 上 `ensure_owner` 还没跑完），
+    #    整批 `record()` 全部 `IntegrityError: FOREIGN KEY constraint failed`；
+    #    而 `record()` 是 **fail-open** 的 → 错误被吞掉 → **账静默丢失**，
+    #    表面上"一切正常"（这正是 usage_store 文件头 ① 要防的那种坏法）。
+    #
+    #    别的表要外键是对的（它们是**业务状态**：会话属于谁、记忆属于谁）。
+    #    但 `usage_log` 是**只追加的事件日志** —— 它的第一要求是"**绝不能丢**"，
+    #    不是"关系要严"。给它加外键 = 让"记一笔账"依赖于另一张表的状态，
+    #    等于给账本装了一个会**静默吞账**的开关。⇒ 这里 user_id 就当一个标签用。
+    ("usage_log", """
+        CREATE TABLE IF NOT EXISTS usage_log (
+            id                 INTEGER PRIMARY KEY,
+            ts                 TEXT NOT NULL,     -- ISO8601 UTC（记账那一刻）
+            user_id            TEXT,              -- 标签，不是外键（见上）
+            provider_id        TEXT,              -- relay / relay2 / deepseek / ...
+            model              TEXT,
+            session_id         TEXT,              -- 认得出会话就记（认不出 = NULL，不编）
+            route              TEXT,              -- chat | complete | probe | raw
+            stream             INTEGER,           -- 1 流式 / 0 非流式
+            shape              TEXT,              -- openai | anthropic | gemini | deepseek
+            -- 🔴 ok=1 上游给了账单；ok=0 **没给**（note 写明原因）。见上面那段。
+            ok                 INTEGER NOT NULL,
+            note               TEXT,
+            prompt_tokens      INTEGER,           -- 以下六列：**捡不到 = NULL，不是 0**
+            completion_tokens  INTEGER,           --   （0 = 上游说了是 0，NULL = 上游没说 ——
+            cache_read_tokens  INTEGER,           --    这两件事被混起来，命中率就再也算不准了）
+            cache_write_tokens INTEGER,
+            cache_in_prompt    INTEGER,           -- 1 = cache_read 已含在 prompt_tokens 里
+                                                  --   （OpenAI/Gemini 口径）
+                                                  -- 0 = 二者并列（Anthropic 口径）
+                                                  -- ⇒ 命中率的**分母**按这一列选，不靠猜
+            total_tokens       INTEGER,
+            ms                 INTEGER,           -- 这次调用花了多久
+            chars_out          INTEGER,           -- 回来多少字符（上游不给账单时，至少知道这次多大）
+            raw                TEXT               -- 上游 usage 原文，一个字段不丢
+        )
+    """),
 ]
 
 # 索引：只建"查询真的会用到"的那几条，不铺张。
@@ -185,6 +244,10 @@ DDL_INDEXES = [
                               "ON memories(user_id, salience DESC)"),
     ("idx_memories_source", "CREATE INDEX IF NOT EXISTS idx_memories_source "
                             "ON memories(source_msg)"),
+    # 账本：两个真实查询 —— "最近 N 天"（按 ts 倒序）与"某个模型花了多少"。
+    ("idx_usage_ts", "CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_log(ts DESC)"),
+    ("idx_usage_model_ts", "CREATE INDEX IF NOT EXISTS idx_usage_model_ts "
+                           "ON usage_log(model, ts DESC)"),
 ]
 
 TABLE_NAMES = [name for name, _ in DDL_TABLES]
@@ -235,7 +298,7 @@ def _get_user_version(conn) -> int:
 
 
 def schema_report(relay) -> dict:
-    """只读诊断：当前库里有哪些表 / 版本号 / 四张表是否齐。"""
+    """只读诊断：当前库里有哪些表 / 版本号 / 五张表是否齐。"""
     with connect(relay) as conn:
         have = _existing_tables(conn)
         ver = _get_user_version(conn)
@@ -258,11 +321,11 @@ def schema_report(relay) -> dict:
 
 
 def ensure_schema(relay) -> dict:
-    """建齐四张表（幂等）。**本函数自己不碰 `messages`。**
+    """建齐五张表（幂等）。**本函数自己不碰 `messages`。**
 
     返回：
         {
-          "version":      3,
+          "version":      5,
           "created":      ["users", ...],   # 本次新建的表
           "already":      [...],            # 本已存在的表
           "indexes":      [...],            # 本次新建的索引
@@ -297,6 +360,9 @@ def ensure_schema(relay) -> dict:
         #    新库已经由 DDL 建好了这些列，上来就 ALTER 会 "duplicate column name"。
         #    **同一段代码要同时伺候新库和老库** —— 这是幂等的关键。
         #    以后每加一列都在这里补一步，并把 SCHEMA_VERSION +1。
+        # ⚠️ **新加一整张表不用进这里**（如 v5 的 `usage_log`）：上面对 `DDL_TABLES`
+        #    的循环每次都跑 `CREATE TABLE IF NOT EXISTS` → 老库自然补齐。
+        #    这一段只负责"**已经存在的表**上多出来的列"，两件事别混。
         migrated: list = []
         additions = [
             # (表, 列, 类型/默认值, 版本)

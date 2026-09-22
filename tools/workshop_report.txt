@@ -1,7 +1,7 @@
 工作间验收 —— 房子的第一间房 + MCP 门
-时间：2026-09-19 15:07:15
+时间：2026-09-22 22:41:10
 仓库：C:\Users\86187\WorkBuddy\2026-07-26-20-49-33\kael-home
-临时目录：C:\Users\86187\AppData\Local\Temp\kaelhome_workshop_xza57f44
+临时目录：C:\Users\86187\AppData\Local\Temp\kaelhome_workshop_kfsxeicz
 
 [OK] A1 做一件 → 目录 + index.html + meta.json 都在
 [OK] A2 id 形状 = YYYYMMDD-xxxx（日期是今天）
@@ -85,8 +85,8 @@
 [OK] C8 名字写错 → isError（不是抛异常、不是静默）
 [OK] D0 前置：指向的是 C 组刚造的那一件（目录里没有别人塞的东西）
 [OK] D1 🔴 无密钥 /app/ext/workshop/list → 401
-[OK] D1 🔴 无密钥 /app/ext/workshop/item/20260919-8fd2 → 401
-[OK] D1 🔴 无密钥 /app/ext/workshop/raw/20260919-8fd2 → 401
+[OK] D1 🔴 无密钥 /app/ext/workshop/item/20260922-7e5e → 401
+[OK] D1 🔴 无密钥 /app/ext/workshop/raw/20260922-7e5e → 401
 [OK] D2 list 200 且 total / items / dir 都在
 [OK] D3 item/{id} 200 且带回 revisions 历史
 [OK] D4 item/不存在 → 404（不是 500）
@@ -120,7 +120,7 @@
 [OK] E6 逃生开关在（房间层可整体关掉）
 [OK] E7 verify_all.py 里接了 workshop_check
 [OK] E8a 空库上：会话投影被跳过，而且**日志说了出来**
-[OK] E8b 空库上：四张表照样建好
+[OK] E8b 空库上：五张表照样建好
 [OK] E8c 🔴 空库上：门与房间**照样装上**（这是回归锁 —— 旧写法会让整个 P0/P1/房间层一起装不上）
 [OK] E8d 空库上：身份层端点 200（不是 404）
 [OK] E8e 空库上：MCP 门列出四个工具

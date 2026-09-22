@@ -68,7 +68,7 @@
 [PASS] D6 🔴 被拦之后已回滚（正文仍是原文）
 [PASS] D7 meta 守卫允许只写 meta
 [PASS] D8 🔴 只写 meta **不动正文指纹**（真比对，不是自比）
-[PASS] D9 schema 版本没被这次改动顶掉（仍是 3）
+[PASS] D9 schema 版本 = 5（usage 记账的 usage_log 表；有意升级就来改这里）
 [PASS] D10 逃生开关在（APP_EXT_GENERATE_DISABLED）
 [PASS] D11 verify_all 已接本套
 [PASS] D16 🔴 「上游自己断」的留痕已接进网关的错误分支

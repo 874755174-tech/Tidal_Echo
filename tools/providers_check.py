@@ -1171,7 +1171,7 @@ def part_c(tmp: Path) -> None:
             and d.get("up_to_date") is True,
             f"schema_version={d.get('schema_version')} expected={d.get('expected_version')} "
             f"模块常量={_S.SCHEMA_VERSION}")
-        chk("🔴 messages 行数未变（2 条种子）+ 四张表齐",
+        chk("🔴 messages 行数未变（2 条种子）+ 五张表齐",
             d.get("messages_rows") == 2 and d.get("tables_ok") is True,
             f"messages={d.get('messages_rows')} tables_ok={d.get('tables_ok')}")
 

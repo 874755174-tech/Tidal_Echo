@@ -46,10 +46,10 @@ r"""
 
   B. 迁移 v3 → v4（**真造一个 v3 老库来升**）
      1-2   老库确实是 v3、memories 确实没有 source 列（先证明起点是对的）
-     3-4   ensure_schema 后 version = 4，`migrated` 里点名 `memories.source`
+     3-4   ensure_schema 后版本推到当前 SCHEMA_VERSION，`migrated` 里点名 `memories.source`
      5-8   🔴 老行还在 / 正文一个字没改 / 新列是 **NULL** / `source_msg` 也没被碰
      9-11  🔴 `messages` DDL 逐字未变 + 行数未变（红线断言真跑了）
-     12-13 幂等：再跑一次 migrated 为空、version 仍 4
+     12-13 幂等：再跑一次 migrated 为空、version 不再动
      14-19 全新库就有 source 列；🔴 新老两库的列**集合**一致；🔴 列**顺序**必然不同
            （`ALTER ADD COLUMN` 只追加在末尾）→ 另证**代码不依赖列顺序**；
            🔴 列上**没有 DEFAULT**（带 DEFAULT = 老行报出默认值 = 伪造来源）
@@ -68,7 +68,7 @@ r"""
      3     🔴 源码扫描：扩展层对 `memories` **没有任何 DELETE / DROP / ALTER**
      4     🔴 `memory.py` **不 import mcp**、不注册 MCP 工具（它不是房间）
      5-6   🔴 关掉开关的房子：端点 404，且**表与缝还在**（能力没了 ≠ 数据没了）
-     7     schema 版本 = 4
+     7     schema 版本 = 当前 SCHEMA_VERSION
      8     `summary_line()` 与启动日志那行 **GBK 安全**
      9     verify_all 已接本套
 
@@ -388,7 +388,9 @@ def run():
     rep = S.ensure_schema(old)
     after = snapshot(old)
     new_cols = [c[0] for c in after["mem_cols"]]
-    chk("B3  升完 version = 4", after["version"] == 4, str(after["version"]))
+    chk("B3  升完版本推到当前 SCHEMA_VERSION（v3 老库一路补到最新）",
+        after["version"] == S.SCHEMA_VERSION,
+        f"{after['version']} vs {S.SCHEMA_VERSION}")
     chk("B4  migrated 里点名 memories.source",
         "memories.source" in (rep.get("migrated") or []), str(rep.get("migrated")))
 
@@ -412,8 +414,9 @@ def run():
     rep2 = S.ensure_schema(old)
     after2 = snapshot(old)
     chk("B12 幂等：第二次 migrated 为空", not (rep2.get("migrated") or []), str(rep2.get("migrated")))
-    chk("B13 幂等：version 仍 4、列清单不变",
-        after2["version"] == 4 and after2["mem_cols"] == after["mem_cols"])
+    chk("B13 幂等：version 不再动、列清单不变",
+        after2["version"] == S.SCHEMA_VERSION
+        and after2["mem_cols"] == after["mem_cols"])
 
     fresh2 = make_db(tmp, "brandnew")
     fc = snapshot(fresh2)
@@ -573,10 +576,15 @@ def run():
     # ⚠️ 裸 sqlite3.connect() 没有 row_factory → 取列要用**下标**，不是 `r["name"]`
     off_cols = [r[1] for r in sqlite3.connect(off_db).execute("PRAGMA table_info(memories)")]
     off_ver = sqlite3.connect(off_db).execute("PRAGMA user_version").fetchone()[0]
-    chk("D10 🔴 但**表与缝还在**（能力没了 ≠ 数据没了）：source 列 + version 4",
-        "source" in off_cols and off_ver == 4, f"cols={off_cols} ver={off_ver}")
+    chk("D10 🔴 但**表与缝还在**（能力没了 ≠ 数据没了）：source 列在 + 版本推到当前",
+        "source" in off_cols and off_ver == S.SCHEMA_VERSION, f"cols={off_cols} ver={off_ver}")
 
-    chk("D11 schema 版本 = 4", S.SCHEMA_VERSION == 4, str(S.SCHEMA_VERSION))
+    # 🔴 这个数字**有意写死**：它守的是"**没有人偷偷动表结构**"。
+    #    将来谁**有意**改了表结构，就来把这里的期望值改掉，并在 commit message 里说明
+    #    —— 一次有意的版本升级要留下一次有意的改动记录。
+    #    ⚠️ 2026-09-22：usage 记账加第 5 张表 `usage_log` → 4 → 5，本行随之更新。
+    chk("D11 schema 版本 = 5（usage 记账的 usage_log 表；有意升级就来改这里）",
+        S.SCHEMA_VERSION == 5, str(S.SCHEMA_VERSION))
     chk("D12 messages 红线断言在（ensure_schema 里那段比对没被删）",
         "红线被破坏" in (DEPLOY / "app_ext" / "schema.py").read_text(encoding="utf-8"))
 

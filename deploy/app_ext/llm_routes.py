@@ -175,6 +175,40 @@ async def _read_json(request) -> dict:
     return body if isinstance(body, dict) else {}
 
 
+def _bill(relay, *, route: str, stream: bool, provider_id=None, model=None,
+          usage=None, ms=None, text=None, chars_out=None, ok=None, note=None,
+          session_id=None, body=None) -> dict:
+    """P2 usage 记账：把这次真实调用记一行。**fail-open**（出任何问题都吞掉）。
+
+    🔴 为什么 fail-open：记账是"更好用"，**不是"能不能说话"的前提**
+       （跟 ⑧ 摘要 / ⑪ 足迹同一个原则）。这里抛出去 = 一次成功的回复
+       在最后一步把用户搞挂 —— 而那笔账本来只是用来算钱的。
+
+    🔴 三种"没有账单"的情形必须**显式**记（`ok=False` + `note`），不许不写：
+        · `stopped`        —— 被用户/下游掐断，上游**很可能已经烧了 token**
+        · `upstream_error` —— 上游中途炸，同样可能有消耗
+        · 其余（默认）      —— 上游正常结束但**没给 usage**（`ok` 留空由 store 判）
+       不写 = 缺口不可见 = 账本自己在说谎（详见 `usage_store.py` 文件头 ①）。
+
+    参数里的 `body` 只用来**反查会话 id**（跟 ⑨ 同一份实现，不另起一套）。
+    `session_id` 显式给了就用它（流式那条路已经算过，不必再算一次）。
+    """
+    try:
+        from . import usage_store as U
+        if session_id is None and body is not None:
+            session_id = _solve_session(relay, body) or None
+        if chars_out is None and text is not None:
+            chars_out = len(text)
+        return U.record(
+            relay,
+            provider_id=provider_id, model=model, session_id=session_id,
+            route=route, stream=stream, usage=usage, ok=ok, note=note,
+            ms=ms, chars_out=chars_out,
+        )
+    except Exception as e:                      # 🔴 有意兜住全部（见上）
+        return {"ok": False, "recorded": False, "reason": f"{type(e).__name__}: {e}"}
+
+
 def _chunk(rid: str, model: str, created: int, text=None, finish=None, usage=None,
            reasoning=None) -> str:
     """拼一个 OpenAI 形状的 SSE 帧。
@@ -320,6 +354,12 @@ def install(relay, public_prefix: str = "/") -> None:
         # 🆕 思考链同样只"有才加" —— 没配思考的模型，响应形状逐字节不变
         if G.expose_reasoning() and out.get("reasoning"):
             msg["reasoning_content"] = out["reasoning"]
+        # 🆕 P2 usage 记账：**先记账再回**（回响应体本身不受影响）。
+        #    记在 return 之前是为了让 `ms` 与 `chars_out` 都在手边；
+        #    它是 fail-open 的，所以"记账出问题"不会变成"这次调用失败"。
+        _bill(relay, route="complete", stream=False, provider_id=out["provider_id"],
+              model=out["model"], usage=out["usage"], ms=out["ms"],
+              text=out["text"], body=body)
         return JSONResponse({
             "id": "chatcmpl-" + uuid.uuid4().hex[:24],
             "object": "chat.completion",
@@ -380,6 +420,9 @@ def install(relay, public_prefix: str = "/") -> None:
         async def _gen():
             task = asyncio.create_task(_producer())
             stopped = False
+            # 🆕 usage 记账的"防重记"标志：下面三条正常收尾路径（stop / end / error）
+            #    各自记一笔并置 True；`finally` 只给**没记过**的那条路兜底。
+            billed = False
             try:
                 while True:
                     kind, val = await q.get()
@@ -392,6 +435,13 @@ def install(relay, public_prefix: str = "/") -> None:
                         #    会变成"换了个模型又生成了一整条"。
                         stopped = True
                         task.cancel()          # 真停住上游：不再向 provider 要数据
+                        # 🆕 usage 记账：**这一笔必须留痕**（见 `_bill` 的 docstring）。
+                        #    掐断时账单还没到（它在最后一帧）→ 拿不到 usage；
+                        #    但上游**很可能已经烧了 token** ⇒ 缺口要看得见，
+                        #    不能因为"没数据"就当这笔调用没发生。
+                        _bill(relay, route="chat", stream=True, provider_id=p["id"],
+                              model=mdl, ok=False, note="stopped", session_id=g_sid)
+                        billed = True
                         yield _chunk(rid, mdl, created, finish="stop")
                         yield "data: [DONE]\n\n"
                         break
@@ -408,6 +458,14 @@ def install(relay, public_prefix: str = "/") -> None:
                         if show_think:
                             yield _chunk(rid, mdl, created, reasoning=val)
                     elif kind == "end":
+                        # 🆕 usage 记账：正常结束这一条 —— 账单就在 `val["usage"]` 里
+                        #    （流式那条由 providers.adapt 显式索要，见 `_stream_usage_on()`）。
+                        #    `ok` 不显式传：由 store 判断"这份账单到底有没有用"
+                        #    （上游正常结束却一个数都没给 → 记成 ok=0，缺口照样可见）。
+                        _bill(relay, route="chat", stream=True, provider_id=p["id"],
+                              model=mdl, usage=val.get("usage"), ms=val.get("ms"),
+                              text=val.get("text"), session_id=g_sid)
+                        billed = True
                         yield _chunk(rid, mdl, created, finish="stop",
                                      usage=val.get("usage") or None)
                         yield "data: [DONE]\n\n"
@@ -427,11 +485,25 @@ def install(relay, public_prefix: str = "/") -> None:
                                 await G9.note_upstream_error(relay, g_sid)
                             except Exception:
                                 pass
+                        # 🆕 usage 记账：上游**中途**炸了 —— 同样可能有消耗（它可能
+                        #    已经生成了一半才断），所以留痕而不是不写。同 stop 那条。
+                        _bill(relay, route="chat", stream=True, provider_id=p["id"],
+                              model=mdl, ok=False, note="upstream_error",
+                              session_id=g_sid)
+                        billed = True
                         err = val.as_dict() if hasattr(val, "as_dict") else {"message": str(val)}
                         yield "data: " + json.dumps({"error": err}, ensure_ascii=False) + "\n\n"
                         yield "data: [DONE]\n\n"
                         break
             finally:
+                # 🆕 usage 记账兜底：走到这儿还**没人记过账** = 这次生成是被
+                #    **下游断开**带走的（手机锁屏 / 关页面 / 刷新）——
+                #    `kind` 三条收尾路径都没轮到，而**上游那边很可能已经烧了 token**。
+                #    `billed` 防的是"记两笔"（那三条都已经记过并置 True）。
+                if not billed:
+                    _bill(relay, route="chat", stream=True, provider_id=p["id"],
+                          model=mdl, ok=False, note="client_disconnect",
+                          session_id=g_sid)
                 # 下游断开（手机锁屏 / 关页面）时把上游请求也停掉，别让它在后台烧钱
                 if not task.done():
                     task.cancel()
