@@ -44,9 +44,36 @@ P2 · usage 记账 —— 把上游每次调用回来的 token 账单**收下、
 |---|---|---|
 | OpenAI / DeepSeek / Gemini | 是 `prompt_tokens` 的**子集**（已含在内） | `prompt_tokens` |
 | Anthropic | 与 `input_tokens` **并列**（不含在内） | `input + cache_read + cache_write` |
+| **`openai+anthropic`（双命名）** | **不知道**（见 ⑤） | 三个都加（保守） |
 
 拿同一个分母套两家 → 一家偏高一家偏低。⇒ 落库时记 `cache_in_prompt`（口径开关），
 命中率**按口径分行求和**，不靠猜、也不用"看起来差不多"。
+
+### ⑤ 一份账单可能**同时**有两套字段名 —— 而且其中一套是坏的（2026-09-23 实测）
+
+上线第一天，线上账本第一笔真实数据就长这样（`recent?raw=1` 抄回来的原文）：
+
+```json
+{"prompt_tokens": 4479, "completion_tokens": 450, "total_tokens": 4929,
+ "usage_semantic": "openai", "usage_source": "anthropic",
+ "input_tokens": 4479, "output_tokens": 0, "input_tokens_details": null}
+```
+
+中转站自己**归一过一遍**（它还给这两个字段起了名字：语义 openai / 来源 anthropic），
+又把**原始那一套一起带了回来**。于是：
+
+- OpenAI 三件套**自己算得平**：`4479 + 450 = 4929` ✓
+- Anthropic 那一对**算不平**：`4479 + 0 = 4479 ≠ 4929` ✗
+- 🔴 为什么坏：流式下 `message_start` 先到、那一帧的 `output_tokens` 还是**上游初值 0**，
+  真正的输出在后面的 `message_delta` 里。站子把两帧并进同一个对象时，
+  **先到的那个 0 把后来的 450 顶掉了**。
+
+🔴 而当时的 `shape_of()` 是"**认出是哪一家**"的单值判断，看见 `input_tokens` 就先返
+`"anthropic"` → 于是每次都去读**那套坏的** → **输出 token 全部记成 0**
+（而 `total_tokens` 又是对的，所以账面看上去很正常 —— 典型的"账本说谎"）。
+
+⇒ 判据从"**名字叫什么**"改成"**哪一套自己算得平**"（`_read_family()`），
+   并在形状里如实点名 `openai+anthropic`；口径**不猜**，留 `None`。
 
 ## 🔴 这一版**不算钱**（有意不做）
 
@@ -82,6 +109,10 @@ _TOKEN_KEYS = ("prompt_tokens", "completion_tokens", "cache_read_tokens",
 #: 一行账的默认形状（`normalize()` 的底盘）。
 _EMPTY = {k: None for k in _TOKEN_KEYS}
 _EMPTY.update({"shape": "unknown", "cache_in_prompt": None})
+
+#: 🔴 中转站把**两套命名一起**发回来时的形状名（见文件头 ⑤）。
+#: 它不是"第四家" —— 它是一份**混了两家字段名**的账单，所以口径单独处理。
+HYBRID_SHAPE = "openai+anthropic"
 
 #: 账本按哪个时区切"天"。Lily 在 UTC+8 —— 按 UTC 切会把晚上 8 点后的算进次日，
 #: 那样"今天花了多少"永远对不上她看到的时间。写死一个偏移量就够（单人形态）。
@@ -136,24 +167,85 @@ def _pick_int(src, *paths):
     return None
 
 
+def _families(raw) -> set:
+    """这份 usage 里**同时出现了哪几家的字段名**（可能不止一家）。
+
+    🔴 之所以要"数几家"而不是"认出是哪家"：实测中转站会把 OpenAI 三件套和
+       Anthropic 原始字段**一起**发回来（见文件头 ⑤）—— "认出一家就返回"
+       的单值判断会在这时**挑错**，而且挑中的恰好是坏的那套。
+    """
+    fams = set()
+    if ("prompt_tokens" in raw or "completion_tokens" in raw
+            or "total_tokens" in raw or "prompt_tokens_details" in raw):
+        fams.add("openai")
+    if ("input_tokens" in raw or "output_tokens" in raw
+            or "cache_creation_input_tokens" in raw
+            or "cache_read_input_tokens" in raw):
+        fams.add("anthropic")
+    if ("promptTokenCount" in raw or "candidatesTokenCount" in raw
+            or "totalTokenCount" in raw or "cachedContentTokenCount" in raw):
+        fams.add("gemini")
+    if "prompt_cache_hit_tokens" in raw or "prompt_cache_miss_tokens" in raw:
+        fams.add("deepseek")
+    return fams
+
+
+def _family_sums_up(raw, fam: str) -> bool:
+    """这一套字段**自己算得平**吗（输入 + 输出 == 总数）？
+
+    🔴 这是双命名时唯一站得住的判据 —— **不看名字，只看算不算得平**。
+       算不平的那一套不是"略有出入"，而是**明摆着是坏的**（实测里它差的是
+       整整一半的输出，而总数是对的，从外面看不出来）。
+    """
+    t = _pick_int(raw, "total_tokens", "totalTokenCount")
+    if t is None:
+        return False
+    if fam == "openai":
+        p, c = _pick_int(raw, "prompt_tokens"), _pick_int(raw, "completion_tokens")
+    elif fam == "anthropic":
+        p, c = _pick_int(raw, "input_tokens"), _pick_int(raw, "output_tokens")
+    else:
+        return False
+    return p is not None and c is not None and p + c == t
+
+
+def _read_family(raw) -> str:
+    """双命名时**该读哪一套**。返回 `"openai"` / `"anthropic"`；不适用 → `""`。"""
+    fams = _families(raw)
+    if not ("openai" in fams and "anthropic" in fams):
+        return ""
+    if _family_sums_up(raw, "openai"):
+        return "openai"
+    if _family_sums_up(raw, "anthropic"):
+        return "anthropic"
+    # 两套都算不平 → 仍读 OpenAI 那套：它自带 `total_tokens`，
+    # 至少"这一轮总共花了多少"是对的（挑一套读，但不假装它有可信度）。
+    return "openai"
+
+
 def shape_of(raw) -> str:
     """判断这份 usage 是哪家的形状。认不出 → `"unknown"`。
 
     顺序有讲究：**先判特征键，再判通用键**。
     DeepSeek 也是 OpenAI 兼容形状，但它有独占的 `prompt_cache_hit_tokens` ——
     先认出它，才能把"缓存命中"映射对（这是本次的目标，不能含糊）。
+
+    🆕 2026-09-23：多出一种 `"openai+anthropic"`（**双命名**，见文件头 ⑤）。
     """
     if not isinstance(raw, dict) or not raw:
         return "unknown"
-    if ("input_tokens" in raw or "output_tokens" in raw
-            or "cache_creation_input_tokens" in raw or "cache_read_input_tokens" in raw):
+    fams = _families(raw)
+    if "openai" in fams and "anthropic" in fams:
+        # 双命名：读哪一套由 `_read_family` 定（判据 = 哪一套算得平）。
+        # 读的是 Anthropic 那套 → 形状就如实写 anthropic（字段名与读法一致）。
+        return HYBRID_SHAPE if _read_family(raw) == "openai" else "anthropic"
+    if "anthropic" in fams:
         return "anthropic"
-    if ("promptTokenCount" in raw or "candidatesTokenCount" in raw
-            or "totalTokenCount" in raw or "cachedContentTokenCount" in raw):
+    if "gemini" in fams:
         return "gemini"
-    if "prompt_cache_hit_tokens" in raw or "prompt_cache_miss_tokens" in raw:
+    if "deepseek" in fams:
         return "deepseek"
-    if ("prompt_tokens" in raw or "completion_tokens" in raw or "total_tokens" in raw):
+    if "openai" in fams:
         return "openai"
     return "unknown"
 
@@ -208,7 +300,14 @@ def normalize(raw) -> dict:
             "cache_creation_input_tokens",
         )
         out["total_tokens"] = _pick_int(raw, "total_tokens")
-        out["cache_in_prompt"] = 1                  # prompt_tokens 含 cached（子集）
+        # 🔴 双命名（`openai+anthropic`）时**口径不明** → `None`，不猜（见文件头 ④⑤）：
+        #    站子两套名字都用了，我们**没有证据**判断它报的 cache_read（如果将来有）
+        #    算不算在 prompt_tokens 里 —— Anthropic 语义下不算（并列），
+        #    OpenAI 语义下算（子集）。猜一个 = 拿命中率骗自己。
+        #    读数侧（`summary()`）对口径不明的行**保守取和**，不按子集处理。
+        # 🔴 同一个道理，`unknown`（压根没认出来）也**不许**声称口径 ——
+        #    这条之前漏了：认不出形状却写 `1`，等于凭空担保"cache 含在 prompt 里"。
+        out["cache_in_prompt"] = 1 if sh in ("openai", "deepseek") else None
 
     # 🔴 `prompt_cache_miss_tokens`（DeepSeek）**故意不映射成 cache_write**：
     #    它说的是"没命中的那部分输入"，不是"写进缓存的量"。混起来会凭空

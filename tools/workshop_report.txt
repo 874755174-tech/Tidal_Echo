@@ -1,7 +1,7 @@
 工作间验收 —— 房子的第一间房 + MCP 门
-时间：2026-09-22 22:41:10
+时间：2026-09-23 22:18:59
 仓库：C:\Users\86187\WorkBuddy\2026-07-26-20-49-33\kael-home
-临时目录：C:\Users\86187\AppData\Local\Temp\kaelhome_workshop_kfsxeicz
+临时目录：C:\Users\86187\AppData\Local\Temp\kaelhome_workshop_8mztix3r
 
 [OK] A1 做一件 → 目录 + index.html + meta.json 都在
 [OK] A2 id 形状 = YYYYMMDD-xxxx（日期是今天）
@@ -85,8 +85,8 @@
 [OK] C8 名字写错 → isError（不是抛异常、不是静默）
 [OK] D0 前置：指向的是 C 组刚造的那一件（目录里没有别人塞的东西）
 [OK] D1 🔴 无密钥 /app/ext/workshop/list → 401
-[OK] D1 🔴 无密钥 /app/ext/workshop/item/20260922-7e5e → 401
-[OK] D1 🔴 无密钥 /app/ext/workshop/raw/20260922-7e5e → 401
+[OK] D1 🔴 无密钥 /app/ext/workshop/item/20260923-c531 → 401
+[OK] D1 🔴 无密钥 /app/ext/workshop/raw/20260923-c531 → 401
 [OK] D2 list 200 且 total / items / dir 都在
 [OK] D3 item/{id} 200 且带回 revisions 历史
 [OK] D4 item/不存在 → 404（不是 500）

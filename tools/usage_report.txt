@@ -76,5 +76,17 @@
 [PASS] F4 🔴 四条收尾路径都记账：complete / end / stopped / upstream_error
 [PASS] F5 🔴 下游断开（手机锁屏）也有兜底记账 + 防重记标志
 [PASS] F6 🔴 `_bill` 是 fail-open（记账不许把说话搞挂）
+[PASS] G1 🔴 双命名 → shape = openai+anthropic（不是 anthropic）
+[PASS] G2 🔴🔴 输出 token 读 **450** —— 不是 Anthropic 那半的 `output_tokens: 0`（线上第一笔账就踩了这个坑：total 是对的，所以从外面看不出来）
+[PASS] G3 输入 4479 / 总数 4929（两套在这两处一致，照旧读对）
+[PASS] G4 站子一个缓存字段都没报 → `cache_read` = None（'没说'，不是 0）
+[PASS] G5 🔴 双命名时口径**不明** → `cache_in_prompt` = None（不猜）
+[PASS] G6 🔴 反着来：平的是 Anthropic 那套 → 就读 Anthropic（判据是'哪一套算得平'，不是名字先后）
+[PASS] G7 两套都算不平 → 仍读 OpenAI 那套（它自带 `total_tokens`，至少总账是对的）
+[PASS] G8 🔴 `unknown`（压根没认出来）**不许**声称口径 —— 认不出却写 1 = 凭空担保
+[PASS] G9 真写库：读回来 shape / 输入 / 输出都对（450 不是 0）
+[PASS] G10 形状怪 ≠ 没账单：覆盖率 1.0、不进缺口（也不该撑高别的行）
+[PASS] G11 🔴 站子不报缓存 → 命中率是 `null`（'还不知道'），**不是 0**（'完全没命中'）
+[PASS] G12 🔴 口径不明的行**保守取和**（分母 = prompt + cache_read + cache_write，不按'子集'乐观处理）
 
-共 78 项，通过 78，失败 0
+共 90 项，通过 90，失败 0

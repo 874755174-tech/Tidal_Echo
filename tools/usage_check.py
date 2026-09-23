@@ -22,6 +22,11 @@ usage 记账看起来只是"把上游的 usage 存进表"，但它最容易出�
     才给 —— 不索要 = 记账是个永远空转的空壳。
   · **半个账单**：Anthropic 把账单拆两帧发（input / output 各一半），
     覆盖式赋值 → 静默丢一半。
+  · **双命名账单**（2026-09-23 线上第一笔账实测）：中转站把 OpenAI 三件套和
+    Anthropic 原始字段**一起**发回来，而 Anthropic 那一半在流式下**是坏的**
+    （`output_tokens` 恒为 0）。"认出是哪一家"式的单值判断会在这时**挑中坏的那套**
+    → **输出 token 全部记成 0**，而 `total_tokens` 又是对的 ⇒ 账面看上去很正常。
+    ⇒ 判据改成"**哪一套自己算得平**"，形状如实写 `openai+anthropic`，口径留 `None`。
   · **掐断的调用凭空消失**：停止 / 上游报错 / 手机锁屏 —— 这些都**真的烧了 token**，
     却都走不到"正常结束"那条路。⇒ 四种收尾各自留痕，且**不重复记**。
   · **账本被外部伪造**：开一个 `POST /usage` = 谁能发请求谁就能改账单。
@@ -35,6 +40,7 @@ usage 记账看起来只是"把上游的 usage 存进表"，但它最容易出�
   D 组 端点（进程内 ASGI TestClient，**不起端口**）+ 红线 + 接线
   E 组 出站请求真跑 `providers.adapt`（纯函数，不发 HTTP）
   F 组 源码扫描（守"合并而非覆盖"与四处记账调用点这类**结构性**约束）
+  G 组 **真样本回归** —— 线上账本抄回来的原文，钉死这个坑
 
 用法：.venv\Scripts\python.exe tools\usage_check.py
 """
@@ -176,6 +182,36 @@ DEEPSEEK_U = {"prompt_tokens": 500, "completion_tokens": 100, "total_tokens": 60
               "prompt_cache_hit_tokens": 400, "prompt_cache_miss_tokens": 100}
 GEMINI_U = {"promptTokenCount": 700, "candidatesTokenCount": 80,
             "totalTokenCount": 780, "cachedContentTokenCount": 600}
+
+# ── 真样本（2026-09-23 从**线上账本** `recent?raw=1` 抄回来的原文，一个字符没改）──
+#    🔴 这一份进验收的意义：它是**真实的、我们没想到过的**形状。
+#       中转站（哈基米，relay 槽）把 OpenAI 三件套和 Anthropic 原始字段一起发回来，
+#       而 Anthropic 那一半在流式下是坏的：
+#         · `output_tokens: 0` —— 那是上游初值，真正的输出（450）在后面的
+#           `message_delta` 里，被先到的 0 顶掉了
+#         · `prompt_tokens` / `completion_tokens` / `total_tokens` 是站子自己归一的，
+#           **自己算得平**（4479 + 450 = 4929）
+#       当时 `shape_of()` 看见 `input_tokens` 就先返 `anthropic` → 读坏的那套
+#       → **输出 token 全记 0**。把它钉在这里，同一个坑不踩第二次。
+REAL_RELAY_U = {
+    "prompt_tokens": 4479, "completion_tokens": 450, "total_tokens": 4929,
+    "usage_semantic": "openai", "usage_source": "anthropic",
+    "prompt_tokens_details": {"text_tokens": 0, "audio_tokens": 0, "image_tokens": 0},
+    "completion_tokens_details": {"text_tokens": 0, "audio_tokens": 0,
+                                  "image_tokens": 0, "reasoning_tokens": 0},
+    "input_tokens": 4479, "output_tokens": 0, "input_tokens_details": None,
+}
+# 反向：双命名，但**平的是 Anthropic 那套** → 该读 Anthropic（判据是"算得平"）。
+REAL_ANTHROPIC_WINS = {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150,
+                       "prompt_tokens": 999, "completion_tokens": 999}
+# 两套都算不平 → 仍读 OpenAI 那套（它自带 total_tokens）。
+REAL_NEITHER = {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 999,
+                "input_tokens": 1, "output_tokens": 1}
+# 双命名**且带缓存** → 口径不明时读数侧要保守取和（不按"子集"乐观处理）。
+HYBRID_WITH_CACHE = {"prompt_tokens": 1000, "completion_tokens": 100,
+                     "total_tokens": 1100, "input_tokens": 900,
+                     "output_tokens": 100, "cache_read_input_tokens": 900,
+                     "cache_creation_input_tokens": 30}
 
 
 def run() -> str:
@@ -605,6 +641,65 @@ def run() -> str:
     bill_body = rt_src.split("def _bill(")[-1].split("\ndef ")[0]
     chk("F6 🔴 `_bill` 是 fail-open（记账不许把说话搞挂）",
         "except Exception" in bill_body and "有意兜住全部" in bill_body, "")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # G. 真样本回归：中转站的**双命名**账单（线上抄回来的原文）
+    # ══════════════════════════════════════════════════════════════════════
+    sect("G. 真样本：中转站的双命名账单（`output_tokens` 恒 0 那个坑）")
+
+    n = U.normalize(REAL_RELAY_U)
+    chk("G1 🔴 双命名 → shape = openai+anthropic（不是 anthropic）",
+        n["shape"] == U.HYBRID_SHAPE, str(n["shape"]))
+    chk("G2 🔴🔴 输出 token 读 **450** —— 不是 Anthropic 那半的 `output_tokens: 0`"
+        "（线上第一笔账就踩了这个坑：total 是对的，所以从外面看不出来）",
+        n["completion_tokens"] == 450, str(n["completion_tokens"]))
+    chk("G3 输入 4479 / 总数 4929（两套在这两处一致，照旧读对）",
+        n["prompt_tokens"] == 4479 and n["total_tokens"] == 4929, str(n))
+    chk("G4 站子一个缓存字段都没报 → `cache_read` = None（'没说'，不是 0）",
+        n["cache_read_tokens"] is None and n["cache_write_tokens"] is None, str(n))
+    chk("G5 🔴 双命名时口径**不明** → `cache_in_prompt` = None（不猜）",
+        n["cache_in_prompt"] is None, str(n["cache_in_prompt"]))
+
+    n = U.normalize(REAL_ANTHROPIC_WINS)
+    chk("G6 🔴 反着来：平的是 Anthropic 那套 → 就读 Anthropic"
+        "（判据是'哪一套算得平'，不是名字先后）",
+        n["shape"] == "anthropic" and n["prompt_tokens"] == 100
+        and n["completion_tokens"] == 50 and n["cache_in_prompt"] == 0, str(n))
+
+    n = U.normalize(REAL_NEITHER)
+    chk("G7 两套都算不平 → 仍读 OpenAI 那套（它自带 `total_tokens`，至少总账是对的）",
+        n["shape"] == U.HYBRID_SHAPE and n["prompt_tokens"] == 10
+        and n["completion_tokens"] == 10, str(n))
+
+    chk("G8 🔴 `unknown`（压根没认出来）**不许**声称口径 —— 认不出却写 1 = 凭空担保",
+        U.normalize({"foo": 1})["cache_in_prompt"] is None
+        and U.normalize({"prompt_tokens": 5})["cache_in_prompt"] == 1, "")
+
+    # ── 真写库 + 读侧 ─────────────────────────────────────────────────────
+    relayH = fresh_db(tmp, "hybrid", seed_owner=True)
+    U.record(relayH, provider_id="relay", model="claude-opus-4-6-thinking",
+             route="chat", stream=True, usage=REAL_RELAY_U, ms=17300,
+             chars_out=298, session_id="api-1")
+    row = U.recent(relayH, 1, with_raw=True)[0]
+    chk("G9 真写库：读回来 shape / 输入 / 输出都对（450 不是 0）",
+        row["shape"] == U.HYBRID_SHAPE and row["prompt_tokens"] == 4479
+        and row["completion_tokens"] == 450 and row["total_tokens"] == 4929,
+        str({k: row[k] for k in ("shape", "prompt_tokens", "completion_tokens")}))
+    h1 = U.summary(relayH, days=0)
+    chk("G10 形状怪 ≠ 没账单：覆盖率 1.0、不进缺口（也不该撑高别的行）",
+        h1["coverage"] == 1.0 and h1["gaps"] == [], str(h1["gaps"]))
+    chk("G11 🔴 站子不报缓存 → 命中率是 `null`（'还不知道'），**不是 0**（'完全没命中'）",
+        h1["cache_hit_rate"] is None and h1["tokens"]["cache_read_rows"] == 0,
+        str(h1["cache_hit_rate"]))
+
+    U.record(relayH, provider_id="relay", model="m2", route="chat", stream=True,
+             usage=HYBRID_WITH_CACHE, session_id="api-2")
+    exp_num, exp_den = 900, 1000 + 900 + 30
+    got = U.summary(relayH, days=0)["cache_hit_rate"]
+    chk("G12 🔴 口径不明的行**保守取和**（分母 = prompt + cache_read + cache_write，"
+        "不按'子集'乐观处理）",
+        got == round(exp_num / exp_den, 4),
+        f"期望 {round(exp_num / exp_den, 4)}（{exp_num}/{exp_den}）实际 {got}")
 
     shutil.rmtree(tmp, ignore_errors=True)
     return tmp
