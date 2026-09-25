@@ -173,25 +173,50 @@ def make_db(tmp: str, name: str = "fresh"):
     return relay
 
 
-def make_old_v3_db(tmp: str):
-    """造一个**真的 v3 老库**：memories 没有 source 列 + 一条老记忆 + 两条消息。
+def _strip_cols(ddl: str, cols) -> str:
+    """按行摘掉某几列定义 —— 用来手造"老形状"的 DDL。
 
-    v3 的定义：settings 有 provider_id、sessions 有 summary_upto、
-    memories **没有** source。前两张表直接用现在的 DDL 就是 v3 形状，
-    只有 memories 要把 source 那一行摘掉。
+    🔴 摘不掉就**抛错**。摘不掉的后果是：造出来的"老库"其实是**今天的形状**，
+       于是下面"老库一路补到最新 / 新老列清单一致"那几条会变成
+       **测了个寂寞还报绿**（比红更坏）。
+       （2026-09-25 真踩过：v6 给 sessions 加了 `distill_upto`、给 memories 加了
+        `superseded_by`，而这里原先是"拿现在的 DDL 直接建" ⇒ 手造的"v3 库"里
+        **已经有 v6 那两列了** ⇒ 它们有没有被迁移补齐，这套再也照不出来。）
+
+    ⚠️ 只摘**列定义那一行**，注释留着 —— 它们是 SQL 注释，不影响表的形状。
+    """
+    out, hit = [], set()
+    for ln in ddl.splitlines():
+        s = ln.strip()
+        if s and not s.startswith("--") and "(" not in s:
+            name = s.split(" ", 1)[0].rstrip(",")
+            if name in cols:
+                hit.add(name)
+                continue
+        out.append(ln)
+    missing = set(cols) - hit
+    if missing:
+        raise RuntimeError(f"手造老库失败：DDL 里没找到这些列 {sorted(missing)}")
+    return "\n".join(out)
+
+
+def make_old_v3_db(tmp: str):
+    """造一个**真的 v3 老库**：memories 没有 source（v4）也没有 superseded_by（v6），
+    sessions 没有 distill_upto（v6）；另带一条老记忆 + 两条消息。
+
+    v3 的定义（对着 `schema.py` 那张版本表）：settings 有 provider_id、
+    sessions 有 summary_upto 但**没有** distill_upto、memories **没有** source。
+    ⇒ 后加的那几列**都得真从 DDL 里摘掉**（见 `_strip_cols`）。
     """
     from app_ext import schema as S
     db = os.path.join(tmp, "old_v3.db")
     conn = sqlite3.connect(db)
     tables = dict(S.DDL_TABLES)
-    for name in ("users", "settings", "sessions"):
+    for name in ("users", "settings"):
         conn.execute(tables[name])
-
-    mem_ddl = "\n".join(
-        ln for ln in tables["memories"].splitlines()
-        if not ln.strip().startswith("source ")      # 只摘 `source     TEXT,`，不动 source_msg
-    )
-    conn.execute(mem_ddl)
+    conn.execute(_strip_cols(tables["sessions"], ("distill_upto",)))
+    # ⚠️ 只摘 `source     TEXT,`，**不动 `source_msg`**（名字前缀像，别连带摘了）。
+    conn.execute(_strip_cols(tables["memories"], ("source", "superseded_by")))
     conn.execute(MESSAGES_DDL)
 
     conn.execute("INSERT INTO users (id, handle, display_name, secret_hash, created) "
@@ -375,7 +400,7 @@ def run():
         f"测试数据自己的正文里就可能有这个词，那是假红）")
 
     # ══════════════════════════════════════════════════════════════════
-    sect("B. 迁移 v3 → v4（真造一个 v3 老库来升）")
+    sect("B. 迁移 v3 → 最新（真造一个 v3 老库来升）")
     # ══════════════════════════════════════════════════════════════════
     old = make_old_v3_db(tmp)
     before = snapshot(old)
@@ -391,8 +416,11 @@ def run():
     chk("B3  升完版本推到当前 SCHEMA_VERSION（v3 老库一路补到最新）",
         after["version"] == S.SCHEMA_VERSION,
         f"{after['version']} vs {S.SCHEMA_VERSION}")
-    chk("B4  migrated 里点名 memories.source",
-        "memories.source" in (rep.get("migrated") or []), str(rep.get("migrated")))
+    chk("B4  migrated 点名补了**后加的每一列**（v4 的 source + v6 那两条）",
+        set(rep.get("migrated") or []) == {"memories.source",
+                                           "sessions.distill_upto",
+                                           "memories.superseded_by"},
+        str(rep.get("migrated")))
 
     legacy = q(old, "SELECT * FROM memories WHERE id='m_legacy'")[0]
     chk("B5  🔴 老行还在（行数没变、id 没变）", len(q(old, "SELECT 1 FROM memories")) == 1)
@@ -583,8 +611,10 @@ def run():
     #    将来谁**有意**改了表结构，就来把这里的期望值改掉，并在 commit message 里说明
     #    —— 一次有意的版本升级要留下一次有意的改动记录。
     #    ⚠️ 2026-09-22：usage 记账加第 5 张表 `usage_log` → 4 → 5，本行随之更新。
-    chk("D11 schema 版本 = 5（usage 记账的 usage_log 表；有意升级就来改这里）",
-        S.SCHEMA_VERSION == 5, str(S.SCHEMA_VERSION))
+    #    ⚠️ 2026-09-25：⑩-b 蒸馏加 `sessions.distill_upto` + `memories.superseded_by`
+    #       → 5 → 6，本行随之更新（同上：有意升级留一次有意的改动记录）。
+    chk("D11 schema 版本 = 6（⑩-b 蒸馏的两条水位/作废列；有意升级就来改这里）",
+        S.SCHEMA_VERSION == 6, str(S.SCHEMA_VERSION))
     chk("D12 messages 红线断言在（ensure_schema 里那段比对没被删）",
         "红线被破坏" in (DEPLOY / "app_ext" / "schema.py").read_text(encoding="utf-8"))
 

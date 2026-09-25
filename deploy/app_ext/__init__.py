@@ -7,7 +7,7 @@
 ## 这个包包什么
 
     P0 · 地基
-    schema.py          4 张表的 DDL + 幂等迁移 + 版本号（不碰 messages）
+    schema.py          五张表的 DDL + 幂等迁移 + 版本号（不碰 messages）
     identity.py        users / settings 的读写 + /app/ext/* 端点
     sessions_store.py  sessions 表（从 messages 投影，可重跑）
     memories_store.py  memories 表（房子的工作记忆，P2 的落点）
@@ -48,8 +48,19 @@
                           他自己的记忆走 OB 的 `hold`。这是**有意不做**，不是漏了
                        🔴 **没有 delete**（让"删记忆"在代码层面不存在）
                        🔴 `salience` **永不外泄**（走 `memories_store.public()` 投影）
-                       ⬜ ⑩-b 蒸馏管道还没做 —— 而且**房子不自己在后台调 LLM 花钱**，
-                          所以它将来也必须是**人/动作触发**
+
+    🧫 · 蒸馏管道（P2 ⑩-b，2026-09-25 起）
+    distill.py         **从对话抽 fact / preference / relationship / event**
+                       + `POST /app/ext/distill` + `GET /app/ext/distill/status`
+                       🔴 **人/动作触发**（没有定时器）—— 而且"没有新东西"时
+                          **连上游都不碰**：省钱靠"不调用"，不靠"调完发现是空的"
+                       🔴 每条必须钉一个 `source_msg`，且必须落在**本次真喂进去的 id**里
+                          —— 对不上就**丢**（宁可少一条，不要一条假的可回溯）
+                       🔴 水位线 = `sessions.distill_upto`（schema v6），与 ⑧ 的
+                          `summary_upto` **各走各的**（一个为省 token、一个为沉淀记忆）
+                       🔴 `redo=true` = **软作废**（`memories.superseded_by`）：
+                          旧行留在库里、默认读不到 —— 因为 ⑩-a 定死了没有 delete
+                       🔴 每次调用都记账（`route=distill`；重试用 `distill_retry`）
 
     🔭 · 自主活动带回上下文（P2 ⑪，2026-09-21 起）
     activity.py        **「第三层」**：把"他最近自己做过的事"插成一条 system
@@ -93,7 +104,8 @@
 ## 幂等与顺序
 
     ensure_schema       建表 + 迁移（v2 补 settings.provider_id · v3 补 sessions.summary_upto
-                        · v4 补 memories.source）
+                        · v4 补 memories.source · v6 补 sessions.distill_upto
+                        + memories.superseded_by）
     ensure_owner        users 表空 → 播种房主（有则不动作）
     sync_from_messages  把已有会话投影进 sessions（有则更新投影字段，不碰 summary）
     identity.install    注册 /app/ext/* 身份与设置端点
@@ -124,6 +136,9 @@
     APP_EXT_CONTEXT_DISABLED=1 只关上下文层（注入与端点都不挂，其余照常）
     APP_EXT_GENERATE_DISABLED=1 只关 ⑨（网关的停止检查点也一起失效，一切照旧）
     APP_EXT_MEMORY_DISABLED=1 只关 ⑩-a 的端点（表与 source 缝照常，只是读写端点不挂）
+    APP_EXT_DISTILL_DISABLED=1 只关 ⑩-b 蒸馏（**这才是不花钱的开关** ——
+                             关掉 = 端点 404、上游一次都不会被碰；
+                             表、缝、两条水位线**一样都不少**，「能力没了 ≠ 数据没了」）
     APP_EXT_ACTIVITY_DISABLED=1 只关 ⑪（不注入足迹、端点不挂；**卡片照常显示**
                                —— 卡片走的是原版 /channel/out → 前端，不归本层管）
     APP_EXT_USAGE_DISABLED=1  只关 usage 端点（**网关照常记账、表照常建**，
@@ -168,6 +183,8 @@ _ROUTES = [
     "/app/ext/generate/reroll", "/app/ext/generate/status",
     # 🆕 记忆层（P2 ⑩-a）—— 房子的技术缓存，**不挂 /mcp**、**没有 delete**
     "/app/ext/memories", "/app/ext/memories/stats",
+    # 🆕 蒸馏管道（P2 ⑩-b）—— 人/动作触发（**没有定时器**）；redo 走软作废
+    "/app/ext/distill", "/app/ext/distill/status",
     # 🆕 自主活动带回上下文（P2 ⑪）—— **全只读**；写侧是原版 /channel/out
     "/app/ext/activity", "/app/ext/activity/status", "/app/ext/activity/preview",
     # 🆕 usage 记账（P2）—— **全只读**；写侧只有网关内联一条（没有 POST 写路由）
@@ -186,9 +203,8 @@ def register(relay, public_prefix: str = "/") -> dict:
     """
     summary = {"ok": False, "schema": None, "owner": None, "sync": None,
                "routes": None, "gateway": None, "rooms": None, "archive": None,
-               "context": None, "generate": None, "memory": None, "activity": None,
-               "usage": None, "warnings": [], "error": None}
-
+               "context": None, "generate": None, "memory": None, "distill": None,
+               "activity": None, "usage": None, "warnings": [], "error": None}
     if _on("APP_EXT_DISABLED"):
         summary["error"] = "disabled by APP_EXT_DISABLED"
         print("[app_ext] 已按 APP_EXT_DISABLED 关闭，跳过五张表 / 身份层 / 模型网关")
@@ -333,6 +349,21 @@ def register(relay, public_prefix: str = "/") -> dict:
                 summary["memory"] = _memory.summary_line()
             _step("记忆层", _mm)
 
+        # ⑩-b 蒸馏管道（P2 ⑩-b）
+        #    🔴 这一层**会调 LLM、会花钱** —— 所以它是**人/动作触发**的：
+        #       进程里不存在一个会自己跑到这里的循环（沿用 ⑧ 立的规矩）。
+        #    🔴 `sessions.distill_upto` + `memories.superseded_by` 两条在 ① 建表
+        #       那一步就加好了（schema v5 → v6）—— 所以这一步挂了也不影响它们。
+        if _on("APP_EXT_DISTILL_DISABLED"):
+            summary["distill"] = "disabled by APP_EXT_DISTILL_DISABLED"
+        else:
+            from . import distill as _distill
+
+            def _dt():
+                _distill.install(relay, public_prefix)
+                summary["distill"] = _distill.summary_line()
+            _step("蒸馏管道", _dt)
+
         # ⑪ 自主活动带回上下文（P2 ⑪）
         #    🔴 这是 Lily 09-21 明确要的那一件：「自主醒来的可视化**体现在上下文里**」。
         #       它**全只读**：写侧是原版 `/channel/out`（落库 + SSE 推送白给），
@@ -397,6 +428,8 @@ def register(relay, public_prefix: str = "/") -> dict:
         print(f"[app_ext] {summary['generate']}")
     if summary.get("memory"):
         print(f"[app_ext] {summary['memory']}")
+    if summary.get("distill"):
+        print(f"[app_ext] {summary['distill']}")
     if summary.get("activity"):
         print(f"[app_ext] {summary['activity']}")
     if summary.get("usage"):

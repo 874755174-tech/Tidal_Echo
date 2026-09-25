@@ -73,6 +73,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -124,6 +125,65 @@ _skipped: list = []
 
 def chk(name: str, ok: bool, detail: str = "") -> None:
     results.append((name, bool(ok), detail))
+
+
+# ---------------------------------------------------------------------------
+# 临时快照目录：三个小工具
+# ---------------------------------------------------------------------------
+#
+# 🔴 为什么值得单开一段（2026-09-25 真踩）：
+#    导出走 `FileResponse(..., background=BackgroundTask(_cleanup, td))` —— 清理是
+#    **响应体发完之后**才跑的。于是有两种失败方式，长得却一模一样：
+#      ① 我们自己漏了（清理根本没跑 / 跑失败了）→ 该红
+#      ② **上一轮**跑挂了留下的孤儿还在 → 这一轮**假红**
+#    旧写法（扫全局临时目录里还有没有 `kael-archive-*`）两种都报红 ⇒ 全量验收里
+#    第 10 套莫名其妙红了一条，说的却是"上一轮没扫干净"。
+#    ⇒ 所以：**每次断言只认"这次新建的"**，并且**开跑前先扫掉上一轮的孤儿**。
+
+_SNAP_RE = re.compile(r"^kael-archive-[a-z0-9_]{8}$")   # tempfile.mkdtemp 的形状
+
+
+def _snap_dirs() -> set:
+    """当前系统临时目录里**我们这套建的**快照目录。"""
+    return {p for p in Path(tempfile.gettempdir()).iterdir()
+            if _SNAP_RE.match(p.name)}
+
+
+def sweep_orphan_snaps() -> int:
+    """开跑前扫掉上一轮留下的孤儿快照目录，返回扫掉几个。
+
+    🔴 只删**我们自己**建的（前缀 + `mkdtemp` 那 8 位形状都对得上），
+       且都在系统临时目录里 —— 删它们零风险。不清的话孤儿会一轮一轮堆下去，
+       而且每一轮都把下一轮的 B13 染红。
+    """
+    gone = 0
+    for p in _snap_dirs():
+        try:
+            shutil.rmtree(p, ignore_errors=True)
+            gone += 1
+        except Exception:
+            pass
+    return gone
+
+
+def new_snaps_since(before: set) -> list:
+    """这次调用**新建**的快照目录（已在 `before` 里的不算）。"""
+    return sorted(p for p in _snap_dirs() if p not in before)
+
+
+def _wait_snap_gone(dirs, timeout: float = 6.0) -> list:
+    """等这批快照目录被清掉（清理是异步的）。返回超时后**还在的**那些。
+
+    🔴 返回的必须是**还在的**，不能返回"等过就算过了" —— 那样这条断言就成了摆设。
+    """
+    dirs = list(dirs)
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        left = [p for p in dirs if p.exists()]
+        if not left:
+            return []
+        time.sleep(0.2)
+    return [p for p in dirs if p.exists()]
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +582,9 @@ def part_b(tmp: Path, base: str) -> None:
     A_DB = base + "/app/ext/archive/db"
     A_JSONL = base + "/app/ext/archive/jsonl"
     A_FILES = base + "/app/ext/archive/files"
+    # 🔴 记下"进 B 组之前就有哪些快照目录"。B13 只认**之后新建的** ——
+    #    否则任何一处遗留的孤儿都会把它染红（而那说的不是我们这套坏了）。
+    snaps_before = _snap_dirs()
 
     st, d, _h = req(A_INFO)
     chk("B1 info 无密钥 → 401", st == 401, f"实际 {st}")
@@ -630,14 +693,11 @@ def part_b(tmp: Path, base: str) -> None:
         and "nosniff" in hget(h, "X-Content-Type-Options").lower(),
         f"cache={hget(h,'Cache-Control')} nosniff={hget(h,'X-Content-Type-Options')}")
 
-    left = []
-    snap_re = re.compile(r"^kael-archive-[a-z0-9_]{8}$")   # tempfile.mkdtemp 的形状
-    for _ in range(12):
-        left = [p for p in Path(tempfile.gettempdir()).iterdir()
-                if snap_re.match(p.name)]
-        if not left:
-            break
-        time.sleep(0.3)
+    # 🔴 B13 只认**这次调用新建的**快照目录。
+    #    旧写法扫的是"全局临时目录里还有没有 `kael-archive-*`" ⇒ 只要**上一轮**跑
+    #    留下过一个孤儿（见 C 组那段注释：那是真发生过的事），这一条就**假红**，
+    #    而它说的不是"我们这套坏了"，是"上一轮没扫干净"。验收假红和假绿一样坏。
+    left = _wait_snap_gone(new_snaps_since(snaps_before))
     chk("B13 临时快照不残留（BackgroundTask 清理）", not left, str(left[:3]))
 
 
@@ -714,6 +774,8 @@ def part_c(tmp: Path) -> None:
         b = f"http://127.0.0.1:{PORT_FRESH}{PREFIX}"
         st, d, _h = req(b + "/app/ext/archive/info", token=SECRET)
         chk("C10 空库上：info 200（不是 404）", st == 200, f"实际 {st}")
+        # 🔴 先记下"这次之前有哪些快照目录"，才能只认这次新建的那一个。
+        snaps_c = _snap_dirs()
         st, body, h = req_bytes(b + "/app/ext/archive/db", token=SECRET)
         ok = False
         try:
@@ -725,8 +787,16 @@ def part_c(tmp: Path) -> None:
             ok = True
         except Exception:
             ok = False
-        chk("C11 🔴 空库上也能导出（第一次真动库之前，这条路就得能用）",
-            st == 200 and ok, f"{st} {len(body)} 字节")
+        # 🔴🔴 **先等清理落地，再关房子**（2026-09-25 真踩，每跑一轮留一个孤儿）：
+        #    清理挂在 `BackgroundTask` 上 = **响应体发完之后**才跑；而下面 `finally`
+        #    里的 `stop_house()` 是立刻 terminate 那个 uvicorn 进程 —— 两者**赛跑**，
+        #    输了就留下一个 `kael-archive-*` 目录。它不是产品缺陷（线上没人下载完
+        #    就掐进程），是**这套验收自己制造的垃圾**：每跑一轮留一个，攒够了就把
+        #    下一轮的 B13 染红。⇒ 这里等它落地（顺带把"清理真的会跑"也验了）。
+        left_c = _wait_snap_gone(new_snaps_since(snaps_c))
+        chk("C11 🔴 空库上也能导出（第一次真动库之前，这条路就得能用）+ 那次快照随后被清掉",
+            st == 200 and ok and not left_c,
+            f"{st} {len(body)} 字节 leftover={[p.name for p in left_c][:2]}")
     finally:
         stop_house(proc, logf)
 
@@ -786,6 +856,11 @@ def part_d(tmp: Path, base: str) -> None:
 
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="kael-archcheck-"))
+    # 🔴 开跑前先扫掉**上一轮**留下的孤儿快照（见 `sweep_orphan_snaps`）：
+    #    不清的话它们会一轮一轮堆下去，而且每一轮都把这一轮的 B13 染红。
+    swept = sweep_orphan_snaps()
+    if swept:
+        print(f"[清扫] 上一轮残留的临时快照目录 {swept} 个（系统临时目录里，已删）")
     started = []
     try:
         print("=" * 78)

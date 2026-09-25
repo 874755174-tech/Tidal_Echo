@@ -1,0 +1,152 @@
+蒸馏管道验收 —— P2 ⑩-b
+时间：2026-09-25 13:37:44
+仓库：C:\Users\86187\WorkBuddy\2026-07-26-20-49-33\kael-home
+临时目录：C:\Users\86187\AppData\Local\Temp\distill_check_yrl08_ac
+
+[OK] A1  build_material 拼出材料
+[OK] A2  🔴 人称与 ⑧ 一致：in →「你」
+[OK] A3  🔴 人称与 ⑧ 一致：out →「我」
+[OK] A4  🔴 used_ids 只含真拼进去的 id（空正文的 13 不在）
+[OK] A5  材料超上限就截断（不再往后拼）
+[OK] A6  🔴 截断后 used_ids 跟着少（不会出现'引用了没喂的 id'）
+[OK] A7  上限为 0 时不 panic、返回空
+[OK] A8  parse_items：纯 JSON
+[OK] A9  解析出的条数与内容对
+[OK] A10 剥 ```json 围栏
+[OK] A11 剥无语言名的围栏
+[OK] A12 前后有解释文字也认
+[OK] A13 顶层直接是数组也认
+[OK] A14 `{"memories": [...]}` 也认
+[OK] A15 🔴 空数组 = 成功（err 为 None），不是失败
+[OK] A16 空输出 → empty_output
+[OK] A17 纯散文 → not_json
+[OK] A18 `items` 不是数组 → items_not_list
+[OK] A19 有 items 键但值为 null → no_items_key
+[OK] A20 顶层数组前后有杂字也能认
+[OK] A21 正文里的转义引号不会把解析搞崩
+[OK] A22 🔴 宽容**有边界**：半截话不抢救（`{` 没闭合 → not_json）
+[OK] A23 🔴 同样不抢救：只有裸引号碎片
+[OK] A24 `items` 是空字符串 → items_not_list
+[OK] A25 全合法 → 全收
+[OK] A26 🔴 编造的 source_msg 被丢 + 计数
+[OK] A27 🔴 缺 source_msg 也算 bad_source（不兜底、不猜）
+[OK] A28 source_msg 不是整数 → bad_source
+[OK] A29 空 text → bad_shape（不写空记忆）
+[OK] A30 🔴 超长 text **丢**而不是截断收纳（截歪的记忆会长期待在库里）
+[OK] A31 非法 kind → 归 fact（与 ⑩-a 的 add() 同一条规矩）
+[OK] A32 批内重复只留一条
+[OK] A33 🔴 去重键不掺 kind（改归类不该让它多长一条）
+[OK] A34 超上限的丢弃并**计数**（不静默）
+[OK] A35 字符串 '11' 能转成整数（宽容这一侧，不宽容编造那一侧）
+[OK] A36 非 dict 元素 → bad_shape
+[OK] A37 text 会被 strip（不留首尾空白）
+[OK] A38 🔴 布尔 True 会变成 1 —— 1 不在区间里时必须被丢
+[OK] B1  起点确实是一个 v5 老库
+[OK] B2  sessions 确实没有 distill_upto
+[OK] B3  memories 确实没有 superseded_by
+[OK] B4  （v5 的 source 缝在，起点对）
+[OK] B5  升到 v6
+[OK] B6  migrated 点名补了这两列
+[OK] B7  🔴 messages DDL 逐字未变 + 行数未变（红线断言真跑了）
+[OK] B8  老记忆正文一个字没改 + source 还在
+[OK] B9  🔴 老行的 superseded_by 是 NULL（不是 ''、不是批次号）
+[OK] B10 老会话的 distill_upto 是 0（= 没蒸过）
+[OK] B11 老会话的 summary / summary_upto 没被碰
+[OK] B12 messages DDL 逐字节一致
+[OK] B13 🔴 `superseded_by` 上**没有 DEFAULT**（否则老行会报出假值）
+[OK] B14 `distill_upto` 的 DEFAULT 是 0（有意与 summary_upto 同形）
+[OK] B15 幂等：再跑一次 migrated 为空、版本不动
+[OK] B16 新老两库 memories 列集合一致
+[OK] B17 新老两库 sessions 列集合一致
+[OK] B18 新库列顺序与老库不同（ALTER 只追加）—— 所以上面那条才值得测
+[OK] B19 🔴 新库那条列上也没有 DEFAULT（新老行为必须一致）
+[OK] C1  add_many 写入 3 条
+[OK] C2  返回的 items 带 id/kind/text/source_msg
+[OK] C3  落库能读回、source=chat 且 superseded_by 是 NULL
+[OK] C4  非法 kind 在库里是 fact
+[OK] C5  source_msg 原样存（不重写）
+[OK] C6  🔴 幂等：同一批重跑 added=0
+[OK] C7  库里还是 3 条（没长重复）
+[OK] C8  批内重复只写一条 / 只计一次 duplicate
+[OK] C9  🔴 去重键含 source：换个来源就是另一条（书房不该被对话吃掉）
+[OK] C10 空 text / 超长 text 都不计入（bad）
+[OK] C11 `source_msg=None` 允许（手动写的记忆本来就没来源消息）
+[OK] C12 mark_superseded 标了 3 条（chat 那三条）
+[OK] C13 🔴 库里**一条都没少**（3 chat + 1 reading + 1 manual = 5）
+[OK] C14 🔴 默认读不到被标废的
+[OK] C15 `include_superseded=True` 才看得到全部
+[OK] C16 🔴 `top()` 默认也排除被标废的（**它喂模型**，漏了等于没重跑）
+[OK] C17 🔴 只动指定 source：reading / manual 那两条没被卷进来
+[OK] C18 🔴 幂等：第二次 marked=0，且**批号不被改写**
+[OK] C19 区间限定生效（12 那一段已被标废 → 0）
+[OK] C20 区间外的行不受影响（1..9 里没有 chat 记忆）
+[OK] C21 🔴 只动 superseded_by 一列（其余列逐字不变）
+[OK] C22 stats 三个数分开报且自洽（total = alive + superseded，4 被废 / 1 有效）
+[OK] C23 🔴 `public()` 带 superseded_by（审计指针）
+[OK] C24 🔴 `public()` **不带 salience**（内部权重永不外泄）
+[OK] C25 `as_extra_for_prompt` 只留 kind/text（连 source 都不给模型）
+[OK] C26 🔴 两个文件里都没有 `DELETE FROM` / `DROP TABLE`（结构性无删除）
+[OK] C27 🔴 没有 `def *delete*()` / `def *remove*()` 这类函数
+[OK] C28 🟡 `ALTER TABLE` 只出现在注释里（真正改表只在 schema.py）
+[OK] D1  无密钥 → 401（GET 与 POST 都拦）
+[OK] D2  status 不带 session_id → 列出会话（含水位与待蒸）
+[OK] D3  status 带 session_id → 该会话两条水位线分开报
+[OK] D4  坏 JSON → 400
+[OK] D5  缺 session_id → 400
+[OK] D6  会话不存在 → 404（不是 502）
+[OK] D7  🔴 dry=true **一次上游都不碰**
+[OK] D8  🔴 dry=true **一行都不写**（memories 还是 0）
+[OK] D9  dry 给出区间 / 行数 / 材料长度 / 原因
+[OK] D10 dry 不推水位线
+[OK] D11 真跑成功并抽出 2 条
+[OK] D12 🔴 这次真的调了上游一次
+[OK] D13 🔴 每条抽出来的 source_msg 都落在本次区间内
+[OK] D14 source 是 chat、superseded_by 是 NULL
+[OK] D15 水位线推到最后一条消息（不是最后一个被引用的 id）
+[OK] D16 🔴 记账：route=distill 的行在
+[OK] D17 返回里给了 run_id
+[OK] D18 🔴 编造的 source_msg 被丢 + 如实计数
+[OK] D19 🔴 编造的那条**没有进库**
+[OK] D20 库里现在 3 条、水位线推到新的一条
+[OK] D21 🔴 没有新内容 → nothing_new
+[OK] D22 🔴 而且**一次上游都不碰**（省钱靠不调用）
+[OK] D23 🔴 坏 JSON 重试一次能救回（retried=true）
+[OK] D24 重试共调了上游 2 次
+[OK] D25 🔴 两次调用**都记账**（distill + distill_retry）
+[OK] D26 重试用了同一份材料 + 补了一句纠错提示
+[OK] D27 🔴 两次都坏 → parse_failed（502，不是 200）
+[OK] D28 🔴 **水位线一格不动**（因为这段真的没蒸成功）
+[OK] D29 失败也留痕（累计调用数上去了）
+[OK] D30 🔴 修好上游后**同一段能重跑成功**（水位线不动的价值）
+[OK] D31 🔴 空数组 = **成功**（reason=distilled，不是 parse_failed）
+[OK] D32 🔴 空数组**也推水位线**（否则那一小段永远卡队头）
+[OK] D33 空数组时 note 说明是「这段没什么可记的」
+[OK] D34 🔴 redo 真的标废了旧的（marked > 0）
+[OK] D35 🔴 旧行**一条都没删**（总行数只增不减）
+[OK] D36 🔴 被标废的批号 = 本次 run_id
+[OK] D37 🔴 默认读只看到新的那一批
+[OK] D38 `include_superseded=1` 在端点上能看到全部
+[OK] D39 🔴 redo 跑失败时**旧的一条都没被废**（先拿新结果才废旧的）
+[OK] D40 排掉积压后水位线追上最后一条（失败的 redo 没偷偷推水位）
+[OK] D41 只够 1 条 → too_few_rows，且**不碰上游**（默认 min_rows=2）
+[OK] D42 `min_rows=1` 能强跑（不想被门槛拦时就显式说）
+[OK] D43 🔴 没有可重的东西 → nothing_to_redo（不偷偷降级成'从头蒸'）
+[OK] D44 两个会话各自蒸出各的记忆
+[OK] D45 🔴 redo 只影响本会话（甲会话那条没被卷进来 / 没被标废）
+[OK] D46 🔴 进程里没有定时器（源码扫描：没有 sleep 循环 / 后台任务痕迹）
+[OK] E1  _ROUTES 里有 /app/ext/distill
+[OK] E2  _ROUTES 里有 /app/ext/distill/status
+[OK] E3  register() 里有第 ⑩-b 步（distill.install + 开关）
+[OK] E4  🔴 distill.py **不 import mcp**、不注册 MCP 工具（它不是房间）
+[OK] E5  🔴 也没有往 OB 写（P3 之前不许碰他的记忆）
+[OK] E6  schema 版本 = 当前 SCHEMA_VERSION（= 6）
+[OK] E7  🔴 summary_line() GBK 安全（不许有编不出的符号）
+[OK] E8  summary_line() 说清了三条关键性质
+[OK] E9  🔴 关掉开关 → 两条端点 404
+[OK] E10 🔴 关掉开关时**表与两列一样都不少**（能力没了 ≠ 数据没了）
+[OK] E11 🔴 ⑧ 摘要那一路也记账了（route="summary"）
+[OK] E12 ⑧ 的记账是 fail-open（自己吞异常，不把压缩搞挂）
+[OK] E13 verify_all 已接本套（distill_check）
+
+共 144 项，通过 144，失败 0
+总检查：全部通过 ✅

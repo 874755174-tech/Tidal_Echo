@@ -31,7 +31,7 @@
 [PASS] B1  起点确实是个 v3 库
 [PASS] B2  起点 memories 确实**没有** source 列（但**有** source_msg）
 [PASS] B3  升完版本推到当前 SCHEMA_VERSION（v3 老库一路补到最新）
-[PASS] B4  migrated 里点名 memories.source
+[PASS] B4  migrated 点名补了**后加的每一列**（v4 的 source + v6 那两条）
 [PASS] B5  🔴 老行还在（行数没变、id 没变）
 [PASS] B6  🔴 老行正文一个字没改
 [PASS] B7  🔴 老行的新列是 **NULL**（不是 'chat' —— 不伪造来源）
@@ -80,7 +80,7 @@
 [PASS] D8  register() 摘要把记忆层报出来了
 [PASS] D9  🔴 关掉开关：/app/ext/memories → 404（能力没了）
 [PASS] D10 🔴 但**表与缝还在**（能力没了 ≠ 数据没了）：source 列在 + 版本推到当前
-[PASS] D11 schema 版本 = 5（usage 记账的 usage_log 表；有意升级就来改这里）
+[PASS] D11 schema 版本 = 6（⑩-b 蒸馏的两条水位/作废列；有意升级就来改这里）
 [PASS] D12 messages 红线断言在（ensure_schema 里那段比对没被删）
 [PASS] D13 🔴 summary_line() GBK 安全（Windows 启动日志会打它）
 [PASS] D14 🔴 memory.py 的 print 语句里没有 GBK 编不出的符号（扫源码）

@@ -48,6 +48,11 @@ P2 · ⑧ 上下文管理（读法）—— 热区 + 滚动摘要
   ⚠️ 会覆盖 `sessions.summary`；原文不动 ⇒ 派生数据随便重写。
 - `provider_id` / `model` → 这一次调哪个供应商/模型。默认沿用设置页那套。
   （Lily 2026-09-19 拍板：**摘要保持 Opus 不动** —— 记忆质量优先，压缩是低频手动操作。）
+
+🆕 **2026-09-25：这一路开始记账了**（`route="summary"`）。
+   在此之前，摘要是全仓**唯一一处"真花钱但不进账本"**的调用 ——
+   于是 `usage summary` 看起来在报"花了多少"，其实少了一块。
+   补上之后才谈得上"账本说它能看到全部消耗"。
 - 阈值取 `settings.context_keep` / `context_trigger`，单位是 **token**
   —— 前端那个滑块写的就是它俩；在此之前它们**存了但全仓库没人读**，是块装饰。
   🔴 这里的 token 是**估算**（见 `estimate_tokens`），不是真分词。
@@ -547,12 +552,19 @@ async def summarize(relay, session_id: str, *, force: bool = False, dry: bool = 
     try:
         out = await G.complete(pid, mid, req)
     except (P.ProviderError, G.GatewayError) as e:
+        # 🔴 失败了也要记一笔（`ok=False` + 理由）—— 上游可能已经烧了 token，
+        #    "没写"就等于账本漏了一笔（见 `usage_store.py` 文件头 ①）。
+        _bill(relay, pid=pid, mid=mid, session_id=sid, usage=None,
+              ok=False, note="upstream_error", ms=None)
         info["ok"] = False
         info["reason"] = "llm_failed"
         info["error"] = e.as_dict() if hasattr(e, "as_dict") else {"message": str(e)}
         return info
 
     text = str(out.get("text") or "").strip()[:SUMMARY_MAX_CHARS]
+    _bill(relay, pid=out.get("provider_id") or pid, mid=out.get("model") or mid,
+          session_id=sid, usage=out.get("usage"), ok=None, note=None,
+          ms=out.get("ms"), chars_out=len(text))
     if not text:
         info["ok"] = False
         info["reason"] = "empty_summary"
@@ -564,6 +576,26 @@ async def summarize(relay, session_id: str, *, force: bool = False, dry: bool = 
     info["model"] = out.get("model")
     info["ms"] = out.get("ms")
     return info
+
+
+def _bill(relay, *, pid=None, mid=None, session_id=None, usage=None,
+          ok=None, note=None, ms=None, chars_out=None) -> None:
+    """⑧ 摘要的记账（`route="summary"`）。**fail-open。**
+
+    🔴 **这块以前根本没记**（2026-09-25 补）—— 摘要是真调上游、真花钱的，
+       而账本里一个字都没有。那正好踩上 `usage_store.py` 文件头 ① 那条：
+       **"不写 = 缺口不可见 = 账本自己在说谎"**。
+       ⇒ 口径不变（谁的账单谁记），只是把漏掉的那一路补上。
+    🔴 记账**绝不向上抛**（跟网关那条一个道理）：一次成功的压缩不该
+       在最后一步因为"记账写不进去"而给用户一个 500。
+    """
+    try:
+        from . import usage_store as U
+        U.record(relay, provider_id=pid, model=mid, session_id=session_id,
+                 route="summary", stream=False, usage=usage, ok=ok, note=note,
+                 ms=ms, chars_out=chars_out)
+    except Exception:
+        pass
 
 
 # ══════════════════════════════════════════════════════════════════════════

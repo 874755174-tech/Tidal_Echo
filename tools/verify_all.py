@@ -25,14 +25,21 @@
                                     **缺口留痕** / **没有 HTTP 写入口** / 出站索要账单 /
                                     **线上真样本：中转站的"双命名"账单**）
                                    ⚠️ 它**不起端口、不连外网**
- 16. git diff -- backend/ examples/ channel/  （红线，必须为空）
+ 16. tools/distill_check.py         P2 ⑩-b 蒸馏管道（**假上游可编程**：回什么由测试决定 /
+                                    **编造的 source_msg 必须被丢** / 水位线的三种推进 /
+                                    坏 JSON 重试一次 / **redo 走软作废、一行不删** /
+                                    **redo 不越界到别的会话** / 记账 route=distill）
+                                   ⚠️ 房子**不起端口**（进程内 ASGI）；假上游占 8830
+ 17. git diff -- backend/ examples/ channel/  （红线，必须为空）
 
 ⚠️ 跑之前先确认 **8080 端口是空的** —— `tools/secaudit.py` 写死用它起测试服务，
    被占（比如那个 `kael-probe` 模型探测器还开着）会让 1/13 整套红，
    而且失败信息**不会告诉你是端口冲突**（2026-09-15 吃过这个假红）。
    （另有 8796/8797 归 archive_check、8798/8799 归 workshop_check、
-   8800/8801/8802 归 context_check、8810~8813 归 generate_check，都是自用，不跟 8080 抢；
-   memory_check / activity_check / usage_check 都不占端口。）
+   8800/8801/8802 归 context_check、8810~8813 归 generate_check、8830 归 distill_check
+   的假上游，都是自用，不跟 8080 抢；
+   memory_check / activity_check / usage_check 都不占端口；
+   distill_check 的房子走进程内 ASGI，**只有假上游占 8830**。）
 ⚠️ 若你的环境设了 `HTTP_PROXY` / `HTTPS_PROXY`：`workshop_check.py` 会自己补
    `NO_PROXY=127.0.0.1,localhost`（官方 mcp SDK 的 httpx 默认 trust_env，会把本机地址
    也塞进代理 → 报出来只有一句 `ExceptionGroup`，看着像"门坏了"其实不是；2026-09-19 吃过）。
@@ -64,29 +71,33 @@ NODE_MODULES = r"C:\Users\86187\.workbuddy\binaries\node\workspace\node_modules"
 
 # (标签, [可执行文件, 脚本], 额外 env)
 SUITES = [
-    ("1/15  访问控制体检", [PY, "secaudit.py"], {}),
-    ("2/15  会话数据层 + 兜底", [PY, "sessioncheck.py"], {}),
-    ("3/15  兜底四场景 + 鉴权红线", [PY, "sessionfallback_check.py"], {}),
-    ("4/15  P0 地基：五张表 + 身份层", [PY, "app_ext_check.py"], {}),
-    ("5/15  P1 模型网关：允许列表 + 三格式 + 真 HTTP + 参数下发 + 原始帧诊断 + CoT 透传", [PY, "providers_check.py"], {}),
-    ("6/15  web/ 各页面内联 JS 语法", [PY, "jscheck.py"], {}),
-    ("7/15  设置页模型/参数前端（jsdom 真跑）", [NODE, "model_ui_check.mjs"],
+    ("1/16  访问控制体检", [PY, "secaudit.py"], {}),
+    ("2/16  会话数据层 + 兜底", [PY, "sessioncheck.py"], {}),
+    ("3/16  兜底四场景 + 鉴权红线", [PY, "sessionfallback_check.py"], {}),
+    ("4/16  P0 地基：五张表 + 身份层", [PY, "app_ext_check.py"], {}),
+    ("5/16  P1 模型网关：允许列表 + 三格式 + 真 HTTP + 参数下发 + 原始帧诊断 + CoT 透传", [PY, "providers_check.py"], {}),
+    ("6/16  web/ 各页面内联 JS 语法", [PY, "jscheck.py"], {}),
+    ("7/16  设置页模型/参数前端（jsdom 真跑）", [NODE, "model_ui_check.mjs"],
      {"NODE_PATH": NODE_MODULES}),
-    ("8/15  会话归档/删除/改名前端（jsdom 真跑）", [NODE, "session_ui_check.mjs"],
+    ("8/16  会话归档/删除/改名前端（jsdom 真跑）", [NODE, "session_ui_check.mjs"],
      {"NODE_PATH": NODE_MODULES}),
-    ("9/15  房间层：工作间 + MCP 门", [PY, "workshop_check.py"],
+    ("9/16  房间层：工作间 + MCP 门", [PY, "workshop_check.py"],
      {"RELAY_WORKSHOP_DIR": ""}),
-    ("10/15 P2-0 导出 / 快照：一致快照 + 只读 + 密钥不进 URL", [PY, "archive_check.py"], {}),
-    ("11/15 P2 ⑧ 上下文管理：注入 / 摘要 / 迁移（从出口倒着验）", [PY, "context_check.py"], {}),
-    ("12/15 P2 ⑨ 停止/重答/多版本（假身体 + 慢上游，专照「偷偷换模型重跑」）",
+    ("10/16 P2-0 导出 / 快照：一致快照 + 只读 + 密钥不进 URL", [PY, "archive_check.py"], {}),
+    ("11/16 P2 ⑧ 上下文管理：注入 / 摘要 / 迁移（从出口倒着验）", [PY, "context_check.py"], {}),
+    ("12/16 P2 ⑨ 停止/重答/多版本（假身体 + 慢上游，专照「偷偷换模型重跑」）",
      [PY, "generate_check.py"], {}),
-    ("13/15 P2 ⑩-a 记忆层：source 缝 + 迁移 v3→v4 + 写入路径（进程内 ASGI，不占端口）",
+    ("13/16 P2 ⑩-a 记忆层：source 缝 + 迁移 v3→最新 + 写入路径（进程内 ASGI，不占端口）",
      [PY, "memory_check.py"], {}),
-    ("14/15 P2 ⑪ 自主活动带回上下文：窗口 + 确定性拼接 + 只插不删（不起端口、不连外网）",
+    ("14/16 P2 ⑪ 自主活动带回上下文：窗口 + 确定性拼接 + 只插不删（不起端口、不连外网）",
      [PY, "activity_check.py"], {}),
-    ("15/15 P2 usage 记账：四家归一 + 命中率口径 + 缺口留痕 + 无写入口"
+    ("15/16 P2 usage 记账：四家归一 + 命中率口径 + 缺口留痕 + 无写入口"
      "（不起端口、不连外网）",
      [PY, "usage_check.py"], {}),
+    ("16/16 P2 ⑩-b 蒸馏管道：编造的 source_msg 必须被丢 + 水位线只在该推进时推进"
+     " + redo 走软作废（不删行）"
+     "（假上游**可编程**；房子不起端口，假上游占 8830）",
+     [PY, "distill_check.py"], {}),
 ]
 
 fails = []

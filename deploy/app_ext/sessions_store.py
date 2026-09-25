@@ -120,6 +120,9 @@ def sync_from_messages(relay, user_id: str = "u_owner") -> dict:
     """把 messages 里已有的会话投影进 `sessions` 表。幂等、可随时重跑。
 
     🔴 只更新 title / pinned / archived / updated —— **绝不动 summary**。
+       🆕 v6 同理**绝不动 `distill_upto`**：两条水位线都是"派生数据的位置标记"，
+       sync 是"从 messages 重投影"的活，它**不配知道**派生数据跑到哪了。
+       （这条 UPDATE 的字段清单就是这份承诺 —— 别顺手加回来。）
 
     返回 {"scanned": N, "inserted": N, "updated": N, "untouched_summary": N}
     """
@@ -229,3 +232,26 @@ def set_summary(relay, session_id: str, summary: str, upto: int = None) -> dict:
         conn.commit()
     return {"ok": True, "session_id": session_id, "chars": len(summary or ""),
             "upto": upto}
+
+
+def set_distill_upto(relay, session_id: str, upto: int) -> dict:
+    """写蒸馏水位线（P2 ⑩-b 用）。`upto` = 已蒸到的最大 message id（schema v6）。
+
+    🔴 **只动 `distill_upto` 这一列** —— 不碰 `summary`、不碰 `summary_upto`。
+       两条水位线**必须能独立走**：⑧ 压缩是"为省 token"，⑩-b 抽取是"为沉淀记忆"，
+       触发时机本来就不同（她可能今天只压缩、明天只蒸馏）。
+       写成"顺手把另一条也带上"就会造出"压了一次摘要，记忆水位莫名前进"这种鬼。
+    🔴 本函数**不负责"只前进不回退"** —— 那是调用方 `distill._advance()` 的裁决
+       （它要先读现值再取 `max`）。这里就是一句老实的 UPDATE，
+       因为"要不要回退"是个**业务判断**，不该藏在存取层里。
+    """
+    with _schema.connect(relay) as conn:
+        row = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if not row:
+            return {"ok": False, "reason": "not_found"}
+        conn.execute(
+            "UPDATE sessions SET distill_upto = ?, updated = ? WHERE id = ?",
+            (int(upto or 0), now_iso(), session_id),
+        )
+        conn.commit()
+    return {"ok": True, "session_id": session_id, "upto": int(upto or 0)}

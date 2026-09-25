@@ -1120,6 +1120,159 @@ G **真样本回归**（线上账本抄回来的原文）12。
 - 它**不做**前缀缓存 → 挪位置也没用，得看它有没有别的省钱档
 - 它**做了但不报**（或报了被它吞掉）→ 省钱在发生，只是我们看不见 ⇒ 那时才值得挪
 
+## 第十四道缝：蒸馏管道（P2 ⑩-b，2026-09-25）—— **抽记忆，但一个字都不往 OB 写**
+
+⑩ 当初被切成 a / b 两半（Lily 2026-09-20 拍板取「乙」）：**a = 焊缝**（表 + `source` 列 +
+写入路径），**b = 蒸馏**（从对话里自动抽出条目）。这一缝是 b。
+
+### 🔴 它产出的东西是**房子的技术缓存**，不是"他的记忆"
+
+这条必须先说清楚，否则整件事的方向会歪：
+
+| | 走哪儿 | 谁写 | 什么时候 |
+|---|---|---|---|
+| **Kael 自己的记忆** | **OB**（`hold`，第一人称） | 他自己 | P3 接他进来之后 |
+| ⑩-b 产出的 `memories` 行 | 房子本地 `memories` 表 | 房子自己（无人在场也跑） | **现在** |
+
+⇒ ⑩-b **不往 OB 写一个字**。OB 是"他的脑子"，`memories` 是"房子替他留的便签"。
+两件事混在一起会立刻产生一个坏结果：**他会读到"别人替他写的、关于他自己的记忆"**。
+所以这一缝的性质是**基建**，不是"给他记忆"。
+
+### 缝在哪：⑩-a 建了表，⑩-b 是往表里**自动**落东西的那台机器
+
+`memories` 表（`source` 缝已经在 ⑩-a 落好）本来就只是"能存"。
+⑩-b 补的是：**谁来抽、抽什么、抽完水位线怎么走、抽坏了怎么办**。
+
+### 🔴🔴 一条水位线：`sessions.distill_upto`（schema v6）
+
+**为什么不从 `MAX(source_msg)` 反推？** 这是这一缝最容易走错的一步。四个理由：
+
+1. **一段对话一条都抽不出来是常态**（"今天聊了天气"）⇒ 反推的话水位线**永远不动**
+   ⇒ 每次触发都从同一条开始重蒸 ⇒ **白花钱**，而且是每次都花。
+2. **"没东西可抽"与"跑失败了"从此分不开** —— 前者是成功、后者不是，
+   反推让两者在库里长得一模一样，于是**只能靠重试来区分**，而重试就是花钱。
+3. 反推把"水位线"和"抽出几条"**绑死**：以后想改"多抽点 / 少抽点"的阈值，
+   会顺带改掉"从哪里接着蒸"的语义。两件事该能各改各的。
+4. 它没法表达"**这次跑成功了，只是没东西**"这个状态 —— 而这个状态是**最常见**的那一种。
+
+⇒ 所以水位线是**独立一列**，`_advance()` **只前进不回退**（`max`）。
+
+⚠️ 它与 ⑧ 的 `sessions.summary_upto` **各走各的**，`sessions_store.sync_from_messages`
+**绝不动 `distill_upto`**（同理 `set_distill_upto()` 只动这一列、不碰 `summary`）。
+理由：两条缝**目的不同**（一个为省 token、一个为沉淀记忆）、**触发时机不同**
+（摘要手动、蒸馏人触发）。合成一条 = 以后想单独调其中一条的节奏就得改另一个。
+
+### 🔴 `source_msg` 是"可回溯"的唯一凭据：**对不上就丢**
+
+`validate_items()` 按 `build_material()` 真拼进 prompt 的 id 集合**筛**，
+不在集合里的一律丢，并如实计数 `dropped_bad_source`。
+
+🔴 为什么不能"猜一个 / 补一个"：编一个 id 的后果不是"少一条来源"，
+而是库里多出一条**看着能查、实际查不到**的记忆 —— **比没有来源更坏**。
+（同一个病在 usage 那边叫"命中率让人以为查得清"。）
+
+**不修、不猜、不补** —— 这条是提示词里"请求它别编"之外的**结构性**保证：
+即使模型说谎，写库之前也会被筛掉。
+
+### 🔴 JSON 容错：**先按对象找，对象给不出外壳才退到数组**
+
+模型回的东西可能是 `{...}`、`[...]`、`{"items":[...],"note":"…"}`、
+也可能是前后带点解释的散文 + 一段 JSON。容错顺序**反了会静默少读东西**：
+
+- 先找 `{}` → 里面没有 `items` / `memories` 外壳时，**才**去找 `[]`
+- 中间那段用 `_slice_json()` 取最外层括号
+- **宽容有边界**：半截话不抢救。**不做"正则捞引号对"**那类把烂 JSON 拼回来的事 ——
+  拼回来的东西**没有人能证明它原意如此**，而它会被当成事实写进库里。
+
+（这条是验收 A20 抓出来的真缺陷：初版先找 `{` 再找 `[`，
+输出只有 `[ {...} ]` 时 `find("{")`…`rfind("}")` 之间那段是坏的，
+**而且不再尝试数组** ⇒ 静默读出空。）
+
+### 🔴🔴 两个必须分开的结局
+
+| 结局 | 判定 | 水位线 | 能不能重跑 |
+|---|---|---|---|
+| **解析失败**（两次都坏） | 没成功 | **不动** | 能（且**必须**能） |
+| **解析成功但是空数组** | 成功，只是没什么可沉淀 | **照推** | 不用 |
+
+混了会怎样：只当"失败"⇒ 永远卡在同一个位置重花；只当"成功"⇒
+上游一抖就把这段对话**永久跳过**（再也不会蒸它）。⇒ 所以 `run()` 里
+坏 JSON 走 `_call` 的重试（`route` 分 `distill` / `distill_retry`，**重试率直接能看**），
+两次都坏才 `parse_failed` 并**保持水位线**。
+
+### 🔴 redo = **软作废**，不是删
+
+⑩-a 就定死了**没有 delete**（让"删记忆"在代码层面不存在）。
+⇒ 重跑不能靠"删了再写"，走 `memories.superseded_by`（v6）。
+**归档 ≠ 删除** —— 与 P2-0 导出、`_archive/` 同源。被作废的行还躺在库里、还查得到，
+只是默认不再进入任何"有效"路径。
+
+🔴 **fail-safe 顺序：先拿到合法的新结果，才去废旧的。**
+`run()` 里的实际顺序是 `mark_superseded(...)` **在** `if good:` 里面 ——
+反过来的话，一旦重跑失败就是"**旧的没了、新的没有**"。
+
+🔴 **`mark_superseded()` 不是 delete 的后门**：它只写一列指针，不删行、不改正文。
+
+🔴 redo 的**左边界必须 `JOIN messages`** 才算得出来：`memories` 表**没有 session 列**，
+"本会话最早那条有效记忆"只能通过 `source_msg` 回到 `messages` 去问。
+不 JOIN 的话，在"有第二个会话被蒸过"的库上会把**别的会话**从更早的 id 开始重蒸并标废。
+左界取值优先级：显式 `from_id` > `_alive_min_source_msg()`；**都没有 ⇒ `nothing_to_redo`**
+（不偷偷降级成"从头蒸"）。
+
+### 🔴 `superseded_by IS NULL` = 有效（`_ALIVE`）—— 这一列**没带 `DEFAULT`**
+
+`list_recent` / `top` / `as_extra_for_prompt` 默认只看有效的，`include_superseded=True`
+是审计用的。**最要紧的是 `top()`** —— 它喂模型；被标废的漏了，就等于**没重跑**。
+
+这一列的妙处是**语义与数据同形**：没被取代 = NULL = 有效，
+所以**不可能"忘了给老行补值"**（对比 `source` 必须区分"不知道"和"来自对话"，
+那边**不能带 DEFAULT**）。而 v6 加 `superseded_by` 时同样**不带 DEFAULT** ——
+`ALTER TABLE ... ADD COLUMN x TEXT DEFAULT 'v'` 会让**老行也报出那个值**（v4 踩过的坑，v6 复检）。
+
+### 省钱是**结构性**的，不是靠自觉
+
+| 保证 | 怎么做到 |
+|---|---|
+| **没有定时器** | 触发只有 `POST /app/ext/distill`（人/动作触发）。源码扫描有断言：**进程里根本不存在一个会自己跑到这里的循环** |
+| **没有新东西时连上游都不碰** | `plan()` 先判 `nothing_new` / `too_few_rows` ⇒ 直接返回，**不发请求 = 不花钱** |
+| **重试最多两次** | `((1,"distill"),(2,"distill_retry"))` |
+| **两次都坏不许"先推了再说"** | 水位线不动 ⇒ 下次还从这儿开始（宁可多花一次，不许永久跳过） |
+| **材料有上限** | `MAX_ROWS_DEFAULT=60`（cap 400）/ `MAX_MATERIAL_CHARS=24000` / `MAX_ITEMS=40` |
+| **每次调用单独记账** | `route` 分 `distill` / `distill_retry`，条数、token 全进 `usage_log` |
+
+### 🔴 顺手补上的缺口：⑧ 的摘要是**真花钱的，但以前不在账本里**
+
+`context.summarize()` 调 `G.complete` 是要钱的，可它此前**一条 `usage_log` 都不写**。
+踩上 `usage_store.py` 文件头那条 ①：**"不写 = 缺口不可见 = 账本自己在说谎"**。
+⇒ 成功/失败**都记账**（`route="summary"`），fail-open。
+
+### 端点 / 开关 / 下一站
+
+- `GET /app/ext/distill/status` —— 看一眼水位线、有没有待蒸的、上次为什么没跑
+- `POST /app/ext/distill` —— `dry` / `redo` / `max_rows` / `min_rows` / `from_id` / `provider_id` / `model`
+- 开关：`APP_EXT_DISTILL_DISABLED`
+- **不挂 MCP 门**：它是房子的机器，不是给他的工具（同 ⑩-a / usage 记账）
+- `summary_line()` 落在启动日志里（GBK 安全，无 emoji）
+
+⏭️ **下一站**：⑩-b 的**输出要不要在某处给模型看**（现在只写不读回）——
+那是"他到底能不能用上"的问题，属于 P3。
+
+### 验收：`tools/distill_check.py`（第 16 套，**144** 项）
+
+A 纯逻辑 38 · B 迁移 v5→v6（**真造 v5 老库来升**）19 · C store 层 28 ·
+D 端点 + **真上游** 46 · E 红线 / 接线 / 开关 13。
+
+🔴 这一套的核心手法是 **"假上游可编程"**：本地 HTTP mock，**回什么由测试决定**
+（好 JSON / 坏 JSON / 编造 id / 空数组 / 前后带散文的 JSON），房子走**进程内 ASGI**
+（不起端口，不跟别的套抢）。光靠"真上游恰好回了什么"是照不出上面这些边界的。
+
+⚠️ 它自带 **8830** 端口；`make_house()` 起第二个 app 前**必须复位各层的 `_INSTALLED`**
+—— 不然"关掉开关 → 404"会在一个**根本没装过路由**的 app 上通过
+（**假绿**：断言为真，但它测的不是那件事）。
+
+⏭️ 已知待办（不在这一缝）：`rest` 那一档要等真实账本；`sleep→fatigue` 是我们的推断，
+下次见面要问 Kael。
+
 ## `web/index.html`：13 处家装 + 1 处 bug 修复（**唯一被动过的原生文件**）
 
 
@@ -1175,15 +1328,16 @@ G **真样本回归**（线上账本抄回来的原文）12。
 - `deploy/app_ext/mcp.py` — 🆕 **房间层的门**：Streamable HTTP MCP（`/mcp` + 别名 `/app/ext/mcp`），工具注册表 + JSON-RPC 分发；**协议版本回显**、无状态、鉴权 fail-closed
 - `deploy/app_ext/modules/` — 🆕 **房间**：`__init__.py` 写约定，`workshop.py` 是**工作间**（`make_thing`/`revise_thing`/`list_things`/`read_thing` + 展示端点 `/app/ext/workshop/*`）
 - `deploy/app_ext/archive.py` — 🆕 **P2-0 导出 / 快照**：`/app/ext/archive/{info,db,jsonl,files}`，**只读、只有 GET**、`Connection.backup()` 一致快照、只认 Bearer（拒 `?token=`）；**不是房间**
-- `deploy/app_ext/context.py` — 🆕 **P2 ⑧ 上下文管理**：在网关注入 `sessions.summary`（**只插不删**、fail-open）+ `/app/ext/context/{summarize,status}`（压缩**手动**触发，房子不自己花钱）；**不是房间**
+- `deploy/app_ext/context.py` — 🆕 **P2 ⑧ 上下文管理**：在网关注入 `sessions.summary`（**只插不删**、fail-open）+ `/app/ext/context/{summarize,status}`（压缩**手动**触发，房子不自己花钱）；**不是房间**。⚠️ 09-25 起**摘要这一路也开始记账**（`route="summary"`，`_bill` fail-open）
 - `deploy/app_ext/generate.py` — 🆕 **P2 ⑨ 停止 / 重答 / 多版本**：`/app/ext/generate/{stop,retry,reroll,status}`；真"停住"的收尾在 `llm_routes` 的停止检查点；写 `messages` **只写 `meta`**；**不是房间**
-- `deploy/app_ext/memory.py` · `memories_store.py` — 🆕 **P2 ⑩-a 记忆层**：`memories.source` 缝（schema **v4**）+ `GET/POST /app/ext/memories` + `/stats`；🔴 **无 delete、`salience` 永不外泄、不挂 MCP 门**（它是"房子的技术缓存"，不是"他的记忆"）；**不是房间**
+- `deploy/app_ext/memory.py` · `memories_store.py` — 🆕 **P2 ⑩-a/⑩-b 记忆层**：`memories.source` 缝（schema **v4**）+ `add_many` / `mark_superseded`（软作废）+ `GET/POST /app/ext/memories`（GET 支持 `?include_superseded=1` 审计）+ `/stats`；🔴 **无 delete、`salience` 永不外泄、不挂 MCP 门**（它是"房子的技术缓存"，不是"他的记忆"）；**不是房间**
+- `deploy/app_ext/distill.py` — 🆕 **P2 ⑩-b 蒸馏管道**（schema **v6**）：`/app/ext/distill` + `/app/ext/distill/status`；从对话抽 `fact/preference/relationship/event` 写进 `memories`；🔴 水位线 `sessions.distill_upto`（**不从 `MAX(source_msg)` 反推**）· **每条必须钉上 `source_msg`，编造的丢** · redo 走**软作废**（先拿到新的才废旧的）· **解析失败不推水位线 / 成功但空数组照推** · **无定时器**（人触发）· 记账 `route=distill|distill_retry`；🔴 **不往 OB 写一个字**（那是 P3）· **不挂 MCP 门**
 - `deploy/app_ext/usage.py` · `usage_store.py` — 🆕 **P2 usage 记账**（schema **v5**）：上游每次真实调用的 token 账单 → `usage_log` 表；四家形状归一（OpenAI / Anthropic / DeepSeek / Gemini）+ 命中率（分母按 `cache_in_prompt` 分口径）+ **捡不到也留痕**（`ok=0`）；`GET /app/ext/usage/{summary,recent,status}`（**全只读**）。🔴 **没有 POST 写路由**（能发请求就能伪造账单）· **不挂 MCP 门**（那是我的账，不是给他的记忆）· **不算钱**（单价会漂）。⚠️ 出站流式现在会带 `stream_options.include_usage`（不开口要就收不到账单），`LLM_STREAM_USAGE=0` 一键退回
 - `web/workshop.html` — 🆕 工作间的展示页（预览走 `srcdoc`，**密钥不进 URL**）
 - `web/archive.html` — 🆕 导出 / 快照的页面（下载走 fetch + Blob，**密钥不进 URL**；明说「不做导入」）
 - `deploy/zeabur-env.example` — 环境变量清单（哪些必填、哪些别填；**P1 段在最后**）
-- `tools/verify_all.py` — **一次跑完全部验收**（**十五套 + 红线**，exit 0 = 全绿；
-  跑前先确认 8080 空；**全量约 1m40s，别用短的超时掐它**）
+- `tools/verify_all.py` — **一次跑完全部验收**（**十六套 + 红线**，exit 0 = 全绿；
+  跑前先确认 8080 空；**全量约 2–3 分钟，别用短的超时掐它**）
 - `tools/secaudit.py` — 访问控制体检（21 项，不连公网）
 - `tools/sessioncheck.py` — 会话数据层 + 兜底断言（19 项）
 - `tools/sessionfallback_check.py` — 兜底四场景 + 鉴权红线（34 项）
@@ -1218,26 +1372,51 @@ G **真样本回归**（线上账本抄回来的原文）12。
   断言打在**上游被调用的次数**上。
   ⚠️ 它的 `D9` 把 `SCHEMA_VERSION` **写死** —— 那是**有意**的，守"没人偷偷动表结构"。
   有意升级 schema 时就来回改这一行（09-20 ⑩-a 把它从 3 改成 4；
-  09-22 usage 记账加第 5 张表又从 4 改成 5）。`memory_check.D11` 是同一手法。
+  09-22 usage 记账加第 5 张表又从 4 改成 5；09-25 ⑩-b 加两条列又从 5 改成 6）。
+  `memory_check.D11` 是同一手法。
+  🔴 **但"硬编码版本号"这套仪式只该住在这两处**（守表结构）。别的套里守**行为**的断言
+  一律读 `S.SCHEMA_VERSION` —— 在那里再抄一遍数字，只会让每次有意升级**连红好几套**，
+  噪声大于信号（09-25 `usage_check.B0/B0d` 就是这么修的）。
 - `tools/memory_check.py` — **P2 ⑩-a 记忆层验收（87 项）**：A store 层 30 ·
-  B 迁移 v3→v4（**真造一个 v3 老库来升**）19 · C 端点 23 · D 红线/接线/开关 15。
+  B 迁移 v3 → **最新**（**真造一个 v3 老库来升**）19 · C 端点 23 · D 红线/接线/开关 15。
   🔴 B 组是重点：手工造 v3 形状的库（把 DDL 里 `source` 那行摘掉）+ 一条老记忆
   + 两条 `messages`，跑 `ensure_schema()` 升上来，再验老行**还在**、正文**一个字没改**、
   新列是 **NULL**（**不是 `'chat'`** —— 带 `DEFAULT` 会伪造来源）、`messages` 的 DDL
   **逐字未变**、幂等。
+  🔴 **09-25 修了一处"假老库"**：手造老库时**必须把后加的列真的从 DDL 里摘掉**
+  （v3 要摘 `source` + `superseded_by` + `distill_upto`）。原先只摘了 `source`、
+  其余拿今天的 DDL 直接建 ⇒ **手造的"v3 库"里已经有 v6 那两列了** ⇒
+  "老库有没有被补齐"这件事**再也照不出来**（`migrated` 对照形同虚设）。
+  改法是 `_strip_cols()` + **摘不掉就抛错**，并在 `B4` 里**点名要求三条列都在 `migrated` 里**
+  —— 拿断言**反证**夹具确实是老形状。同一毛病在 `usage_check.make_old_v4_db` 也有（已修）。
+  💡 **通用教训**：*手造"某个旧版本"的夹具，只要有一处是"拿今天的结构直接建"，那个夹具就在说谎*，
+  而它的表现是**绿**。
   ⚠️ 它**不起端口**（进程内 ASGI TestClient）→ 不跟别的套抢端口。
   ⚠️ 断言的比对面要跟它想守的事对齐：守"投影里没这个**字段**"就该比**键名集合**，
   别比整段 JSON —— 测试数据自己的正文里可能就有那个词（A30 真踩过）。
 - `tools/usage_check.py` — 🆕 **P2 usage 记账验收（90 项）**：A 四家形状归一 17 ·
-  B **真造 v4 老库升 v5** + 记账 15 · C 聚合与命中率（**手算对账**）13 ·
+  B **真造 v4 老库升到最新** + 记账 15 · C 聚合与命中率（**手算对账**）13 ·
   D 端点 / 红线 / 接线 / 开关 22 · E 出站索要账单（真跑 `adapt`）5 · F 接线守门 6 ·
   G **真样本回归**（线上账本抄回来的原文，双命名账单）12。
   🔴 重点守的是**数据的意义**，不是"有没有数据"：捡不到必须是 `None` 不是 `0`、
   `ok=0` 必有理由、命中率按 `cache_in_prompt` 分口径、空数据 = `null` 而不是 `0`、
   真 0 命中 = `0.0`（与 `null` 严格区分）、**没有 POST 写路由**（405）、
   出站流式必须带 `stream_options`、`LLM_STREAM_USAGE=0` 能逐字节退回。
+  🔴 09-25 修了两处：① `make_old_v4_db` 手造的"v4 库"里**已经有 v6 那两列**了
+  （拿今天的 DDL 建的）⇒ 改成 `_drop_column_lines()` 真摘 + 摘不掉就抛错，
+  `B0` 里点名要求 `migrated` 正好是那两条；② `B0/B0d` 不再写死版本号，
+  改读 `S.SCHEMA_VERSION`（理由见 `generate_check` 那条）。
   ⚠️ 它**不起端口、不连外网**。
 - `tools/model_ui_check.mjs` — 🆕 **设置页模型/参数前端（35 项，jsdom 真跑 `index.html`）**：
   专治"后端接口对、前端逻辑错"这类只有真跑页面才看得见的问题 ——
   假状态、PUT 失败不回滚、以及"拉不到就硬编一个"这三件事各有用例守着
+- `tools/distill_check.py` — 🆕 **P2 ⑩-b 蒸馏管道验收（144 项）**：A 纯逻辑 38 ·
+  B 迁移 v5→v6（**真造一个 v5 老库**：建完 `ALTER TABLE … DROP COLUMN` 再写回 `user_version=5`，
+  **并用 B2/B3 反证那两列真的不在了**）19 · C store 层 28 · D 端点 + 真上游 46 ·
+  E 红线 / 接线 / 开关 13。
+  🔴 手法是 **"假上游可编程"**：本地 mock 回什么**由测试决定**（好 JSON / 坏 JSON /
+  编造 id / 空数组 / 前后带散文的 JSON），房子走**进程内 ASGI**（不起端口）。
+  光靠"真上游恰好回了什么"是照不出"编造的 `source_msg` 必须被丢"这类边界的。
+  ⚠️ 假上游占 **8830**；`make_house()` 起第二个 app 前**必须复位各层 `_INSTALLED`**
+  —— 不然"关掉开关 → 404"会在一个**根本没装过路由**的 app 上通过（**假绿**）。
 - `tools/jscheck.py` — 抽出 `web/*.html` 内联 JS 做语法检查（index / album / workshop / archive 全覆盖）

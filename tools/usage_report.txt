@@ -15,10 +15,10 @@
 [PASS] A15 空 / None / 垃圾 → shape=unknown 且一个数都没有
 [PASS] A16 只认出形状、一个数都没有 → usable=False（不许撑高 coverage）
 [PASS] A17 嵌在 message.usage 里的（部分中转站）也能归一
-[PASS] B0 🔴 老库（v4）升上来：**只多一张 usage_log**，版本推到 5
+[PASS] B0 🔴 老库（v4）升上来：只多该多的（一张表 + 两条后加的列），版本推到声明值
 [PASS] B0b 🔴 升级一行老数据都没动（记忆还在、正文未改、消息行数与内容不变）
 [PASS] B0c 幂等：再跑一次不新建任何表
-[PASS] B0d 新库：版本 = 5，五张表齐（含 usage_log）
+[PASS] B0d 新库：版本 = 声明值，五张表齐（含 usage_log）
 [PASS] B1 🔴 record 真的写了一行（且判定为有账单）
 [PASS] B2 读回来的字段与写入一致（model / tokens / ms / chars_out / session）
 [PASS] B3 🔴 raw 存了上游原文（一个字段不丢：嵌套的 details 也在）

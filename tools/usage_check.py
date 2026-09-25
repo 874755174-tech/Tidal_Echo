@@ -145,17 +145,49 @@ def fresh_db(tmp: str, name: str, seed_owner: bool = False) -> FakeRelay:
     return relay
 
 
+def _drop_column_lines(ddl: str, cols) -> str:
+    """从建表语句里**按行摘掉**某几列 —— 用来手造"老形状"的库。
+
+    🔴 摘不掉就**抛错**。安静地摘不掉的后果是：手造出来的"老库"其实是**新形状**，
+       于是"老库升级"那几条断言变成**测了个寂寞还报绿** —— 比直接红更坏。
+       （2026-09-25 真踩过：v6 给 sessions 加了 `distill_upto`、给 memories 加了
+        `superseded_by`，而这里原先是"拿现在的 DDL 直接建" ⇒ 手造的"v4 库"里
+        **已经有这两列了** ⇒ `migrated` 恒为 `[]`，"升级补齐了没有"这件事
+        再也照不出来。）
+    """
+    out, hit = [], set()
+    for line in ddl.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("--") and "(" not in stripped:
+            name = stripped.split(" ", 1)[0].rstrip(",")
+            if name in cols:
+                hit.add(name)
+                continue
+        out.append(line)
+    missing = set(cols) - hit
+    if missing:
+        raise RuntimeError(f"手造老库失败：DDL 里没找到这些列 {sorted(missing)}")
+    return "\n".join(out)
+
+
 def make_old_v4_db(tmp: str) -> FakeRelay:
     """真造一个 **v4 老库**：五张表里**没有** `usage_log`，另带一条老记忆 + 一条消息。
 
-    v4 的定义：settings 有 provider_id、sessions 有 summary_upto、
-    memories 有 source、**没有 usage_log**。前四张表用现在的 DDL 就是 v4 形状。
-    老库升级必须**只多一张表**，一行老数据都不许动 —— 这才是这条验收要守的。
+    v4 的定义（对着 `schema.py` 那张版本表）：settings 有 provider_id、
+    sessions 有 summary_upto、memories 有 source、**没有 usage_log**、
+    **没有 `sessions.distill_upto` / `memories.superseded_by`**（那是 v6）。
+    前四张表拿现在的 DDL **摘掉后加的列**就是 v4 形状。
+
+    老库升级必须**只多该多的东西**，一行老数据都不许动 —— 这才是这条验收要守的。
     """
     from app_ext import schema as S
     db = os.path.join(tmp, "old_v4.db")
     conn = sqlite3.connect(db)
     tables = dict(S.DDL_TABLES)
+    # ⚠️ 后加的列**必须真的从 DDL 里摘掉**，否则这个库不是 v4 而是"今天的形状"，
+    #    下面 B0 里验"升级补齐了没有"就永远为真（假绿）。
+    tables["sessions"] = _drop_column_lines(tables["sessions"], ("distill_upto",))
+    tables["memories"] = _drop_column_lines(tables["memories"], ("superseded_by",))
     for name in ("users", "settings", "sessions", "memories"):
         conn.execute(tables[name])
     conn.execute(MESSAGES_DDL)
@@ -285,8 +317,16 @@ def run() -> str:
     before_msg = sqlite3.connect(old.DB_PATH).execute(
         "SELECT COUNT(*) FROM messages").fetchone()[0]
     rep = S.ensure_schema(old)
-    chk("B0 🔴 老库（v4）升上来：**只多一张 usage_log**，版本推到 5",
-        rep["created"] == ["usage_log"] and rep["version"] == 5, str(rep))
+    # ⚠️ 版本号这里**有意不写死**（不学 generate_check.D9 / memory_check.D11 那套仪式）：
+    #    那两条守的是"**没人偷偷动表结构**"，所以必须硬编码、一动就红。
+    #    而 B0 / B0d 守的是**行为** —— "老库升上来该齐的都齐了 / 新库版本 = 声明值"。
+    #    在这里再硬编码一遍，只会让每次有意升级**连红三套**，噪声大于信号。
+    # 🔴 但 `migrated` 那一项是**具体列名**：它就是"这一次老库到底补了哪几列"的留档，
+    #    以后 schema 再加列时要跟着改（这是有意升级的一部分，不是忘了改）。
+    chk("B0 🔴 老库（v4）升上来：只多该多的（一张表 + 两条后加的列），版本推到声明值",
+        rep["created"] == ["usage_log"]
+        and rep["migrated"] == ["sessions.distill_upto", "memories.superseded_by"]
+        and rep["version"] == S.SCHEMA_VERSION, str(rep))
 
     conn = sqlite3.connect(old.DB_PATH)
     mem_n = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
@@ -303,8 +343,8 @@ def run() -> str:
 
     relay = fresh_db(tmp, "main", seed_owner=True)
     out = S.ensure_schema(relay)
-    chk("B0d 新库：版本 = 5，五张表齐（含 usage_log）",
-        out["version"] == 5
+    chk("B0d 新库：版本 = 声明值，五张表齐（含 usage_log）",
+        out["version"] == S.SCHEMA_VERSION
         and all(S.schema_report(relay)["tables_present"].values()), "")
 
     r = U.record(relay, provider_id="relay", model="claude-opus-4-6", route="chat",

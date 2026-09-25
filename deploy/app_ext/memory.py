@@ -47,9 +47,9 @@ P2 ⑩-a · 记忆层 —— `memories` 表 + `source` 缝 + **写入路径**
 
 ## 端点
 
-    GET  /app/ext/memories        读（`?limit=&source=`）—— 已过白名单投影
+    GET  /app/ext/memories        读（`?limit=&source=&include_superseded=`）—— 已过白名单投影
     POST /app/ext/memories        写（body: kind, text, source?, source_msg?, salience?）
-    GET  /app/ext/memories/stats  计数（按 kind 与 source 两个维度）
+    GET  /app/ext/memories/stats  计数（按 kind 与 source 两个维度 + 有效/被标废）
 
 挂载：`app_ext/__init__.py` 第 ⑩ 步；逃生开关 `APP_EXT_MEMORY_DISABLED=1`。
 
@@ -105,7 +105,13 @@ def _install_routes(relay, public_prefix: str = "/") -> None:
 
     @relay.app.get(base)
     async def _list(request: Request):
-        """读。`?limit=`（默认 50，上限 500）· `?source=`（给了就只取那一种）。"""
+        """读。`?limit=`（默认 50，上限 500）· `?source=`（给了就只取那一种）
+        · `?include_superseded=1`（连**被标废的**一起给 —— **审计用**，默认不给）。
+
+        🆕 `include_superseded` 是 ⑩-b 带来的：蒸馏重跑走的是**软作废**
+        （`superseded_by`，行不删）。所以"看得见全部"必须有 HTTP 出口，
+        否则"可审计"只活在 `memories_store` 里、界面上根本摸不到。
+        """
         relay.check_auth(request)
         q = request.query_params
         try:
@@ -114,15 +120,18 @@ def _install_routes(relay, public_prefix: str = "/") -> None:
             limit = 50
         limit = max(1, min(LIMIT_MAX, limit))
         src = (q.get("source") or "").strip() or None
+        inc = str(q.get("include_superseded") or "").strip().lower() in (
+            "1", "true", "yes", "on")
         try:
-            rows = M.list_recent(relay, limit, _uid(), src)
+            rows = M.list_recent(relay, limit, _uid(), src, include_superseded=inc)
         except Exception as e:
             return _json({"ok": False, "reason": "list_failed",
                           "detail": f"{type(e).__name__}: {e}"}, 500)
         # 🔴 白名单投影 —— salience 在这一步被挡在外面，不是靠"记得别加"
         items = [M.public(r) for r in rows]
         return _json({"ok": True, "count": len(items), "items": items,
-                      "filter": {"source": src, "limit": limit}})
+                      "filter": {"source": src, "limit": limit,
+                                 "include_superseded": inc}})
 
     @relay.app.post(base)
     async def _add(request: Request):

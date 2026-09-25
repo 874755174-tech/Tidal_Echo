@@ -1110,8 +1110,10 @@ def part_d(tmp: Path, log_path: Path) -> None:
     #       （这是"有意升级"的正常流程，不是本套坏了）。
     #    ⚠️ 2026-09-22：usage 记账加第 5 张表 `usage_log` → 4 → 5，本行随之更新
     #       （同上：有意升级留一次有意的改动记录）。
-    chk("D9 schema 版本 = 5（usage 记账的 usage_log 表；有意升级就来改这里）",
-        _sch.SCHEMA_VERSION == 5, f"={_sch.SCHEMA_VERSION}")
+    #    ⚠️ 2026-09-25：⑩-b 蒸馏加 `sessions.distill_upto` + `memories.superseded_by`
+    #       → 5 → 6，本行随之更新（同上）。
+    chk("D9 schema 版本 = 6（⑩-b 蒸馏的两条水位/作废列；有意升级就来改这里）",
+        _sch.SCHEMA_VERSION == 6, f"={_sch.SCHEMA_VERSION}")
     chk("D10 逃生开关在（APP_EXT_GENERATE_DISABLED）",
         "APP_EXT_GENERATE_DISABLED" in init_src
         and "APP_EXT_GENERATE_DISABLED" in src, "")

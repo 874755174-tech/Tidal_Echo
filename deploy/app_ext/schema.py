@@ -48,7 +48,7 @@ Tidal_Echo 原版只有两张表：`messages`（含 `meta` JSON）和 `push_subs
 
 3. **版本号存在 `PRAGMA user_version`。**
    不新增"迁移记录表"——那会变成第 5 张表，而 `user_version` 本来就是
-   SQLite 为这个用途留的库头字段。当前 `SCHEMA_VERSION = 4`。
+   SQLite 为这个用途留的库头字段。当前 `SCHEMA_VERSION = 6`。
 
    | 版本 | 加了什么 | 谁要的 |
    |---|---|---|
@@ -56,7 +56,12 @@ Tidal_Echo 原版只有两张表：`messages`（含 `meta` JSON）和 `push_subs
    | v2 | `settings.provider_id` | P1 模型网关 |
    | v3 | `sessions.summary_upto` | P2 ⑧ 上下文管理 |
    | v4 | `memories.source` | P2 ⑩-a（书房等的"缝"） |
-   | **v5** | **`usage_log` 表（第 5 张）** | **P2 · usage 记账** |
+   | v5 | `usage_log` 表（第 5 张） | P2 · usage 记账 |
+   | **v6** | **`sessions.distill_upto` + `memories.superseded_by`** | **P2 ⑩-b 蒸馏管道** |
+
+   ⚠️ **这张表修正过一次**：写 v4 那一格时它写的是「当前 `SCHEMA_VERSION = 4`」，
+   而当时实际已经是 **5**（`usage_log` 先占了）—— 因为**规格里的版本号会漂**。
+   **动 schema 之前先读 `SCHEMA_VERSION` 的现值，不要信文档里的数字。**
 
    ⚠️ **v4 这一格曾经被规格预写成 "v2 → v3"** —— 因为规格写的时候
    v2/v3 还没被占。**规格里的版本号会漂**，动 schema 前先读这里的现值。
@@ -102,7 +107,20 @@ from typing import Optional
 #       网关早就把 usage 从流里"捡"出来了，但**只塞进 SSE 帧就没了** ——
 #       于是我们既看不到消耗，更看不到缓存命中。这是**只追加**的账本，
 #       不是状态表 —— 2026-09-22）
-SCHEMA_VERSION = 5
+#   6 → sessions.distill_upto + memories.superseded_by（P2 ⑩-b 蒸馏管道，2026-09-25）
+#       ① `distill_upto` = 「这段对话已经蒸到哪一条消息了」。跟 ⑧ 的
+#          `summary_upto` 是同一件事的两种用途（⑧ 为省 token 压缩，⑩-b 为沉淀抽取），
+#          所以**各自一条水位线**，不共用 —— 用途不同，触发时机也不同。
+#          🔴 **为什么不从 `MAX(source_msg)` 反推**：那会把"水位线"和
+#          "抽出了几条"绑死 —— 一段对话**一条都抽不出来**是常态（很常见！
+#          聊了二十句全是家常），那时水位线不动 ⇒ 下次重蒸同一段 ⇒ 白花钱。
+#       ② `superseded_by` = **软作废指针**（被哪一批重蒸取代）。蒸馏是"抽"，会抽歪；
+#          ⑩-a 定死了**没有 delete**（结构性），所以"重跑"不能靠删。
+#          ⇒ 用这一列把旧批**标废**：行还在库里（可审计、可反查、可人工恢复），
+#          只是默认读不到。**归档 ≠ 删除**，跟 P2-0 导出那条同源。
+#          🔴 **不带 DEFAULT**：NULL = 有效。带了 DEFAULT 会让老行报出那个值
+#          —— 跟 v4 的 `source` 踩的是同一个坑（见 DDL 里那段注释）。
+SCHEMA_VERSION = 6
 
 # 五张表的建表语句。
 # ⚠️ 顺序有依赖：users 先建，其余三张都 REFERENCES users(id)。
@@ -148,6 +166,10 @@ DDL_TABLES = [
             pinned     INTEGER DEFAULT 0,
             summary    TEXT,                      -- 滚动摘要写这里（P2 ⑧）
             summary_upto INTEGER DEFAULT 0,       -- 摘要已覆盖到的最大 message id（v3 加）
+            -- 🆕 v6：**蒸馏水位线** —— 这段对话已经"抽"到哪一条消息了（⑩-b）。
+            --     跟 `summary_upto` 是同一件事的两种用途，所以**各走各的水位线**：
+            --     ⑧ 压缩为省 token，⑩-b 抽取为沉淀记忆 —— 触发时机本来就不同。
+            distill_upto INTEGER DEFAULT 0,
             archived   INTEGER DEFAULT 0,
             created    TEXT NOT NULL,
             updated    TEXT NOT NULL
@@ -176,6 +198,12 @@ DDL_TABLES = [
             --     ⇒ 省略 source 的插入得到 **NULL**，`NULL` 就是"不知道"，不兜底。
             source     TEXT,
             salience   REAL DEFAULT 0.5,          -- 重要度（内部权重，永不展示）
+            -- 🆕 v6：**软作废指针** —— 这条被哪一批蒸馏取代了（NULL = 仍然有效）。
+            --     ⑩-b 蒸馏会抽歪，而 ⑩-a 定死了**没有 delete**（让"删记忆"在代码层面
+            --     不存在）⇒ "重跑"唯一能走的路是**标废**：行留在库里（可审计、可人工
+            --     恢复），默认读不到而已。**归档 ≠ 删除**（跟 P2-0 导出同源）。
+            --     🔴 **同上不带 DEFAULT**：NULL = 有效，带了 DEFAULT 会让老行报出那个值。
+            superseded_by TEXT,
             created    TEXT NOT NULL,
             last_used  TEXT
         )
@@ -325,7 +353,7 @@ def ensure_schema(relay) -> dict:
 
     返回：
         {
-          "version":      5,
+          "version":      6,
           "created":      ["users", ...],   # 本次新建的表
           "already":      [...],            # 本已存在的表
           "indexes":      [...],            # 本次新建的索引
@@ -373,6 +401,12 @@ def ensure_schema(relay) -> dict:
             #    🔴 **不带 DEFAULT**（理由见 DDL 里那段注释）：带 DEFAULT 会让老行
             #       报出那个默认值 → 把"不知道从哪来"洗成"来自对话"。省略 = NULL = 不知道。
             ("memories", "source", "TEXT", "v4"),
+            # 🆕 v6：⑩-b 蒸馏管道的两条（Lily 09-25 开干）。
+            #    ①「蒸到哪条了」—— 跟 ⑧ 的 `summary_upto` 有意**写成同一个形状**
+            #      （`INTEGER DEFAULT 0`），这样"没蒸过"和"没压过"语义一致，读代码不用切换脑。
+            ("sessions", "distill_upto", "INTEGER DEFAULT 0", "v6"),
+            #    ② 软作废指针。**不带 DEFAULT**（NULL = 有效）—— 理由见文件头 6 → 那一段。
+            ("memories", "superseded_by", "TEXT", "v6"),
         ]
         for table, col, decl, _ver in additions:
             cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
