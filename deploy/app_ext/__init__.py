@@ -72,6 +72,23 @@
                        🔴 **写侧不在这里**：身体 POST `/channel/out` `type=activity`
                           （落库 + SSE 实时推送都是原版白给的，房子不新增第二条写入口）
 
+    🕯 · 在场信号收口（P3 前置 ⑬，2026-09-27 起）
+    presence.py        **她最后一次开口是什么时候** —— 派生自 `messages` 里
+                       最新一条 `direction='in'`（`/app/send` 落的第一行就是它）
+                       + `GET /app/ext/presence` + `/status`（**全只读**）
+                       🔴 它替掉的是「一个自己通知另一个自己」那套（MCP 工具
+                          `life_ping`）：聊天搬进房子后，`loop` 路零工具 ⇒ 那条路
+                          结构上不可达，而且它天然要"分清谁写的"（OB 是一锅混的）。
+                          `direction='in'` **不含他自己写的东西** ⇒ 那一整类补丁
+                          在这条路上根本不必存在。**life_ping 不删**（kelivo 那条路
+                          今天还在用），口径改成取两者较新者，退场时间 = kelivo 退场时间
+                       🔴 只读 + **没有写入口**：presence 一旦能被写，
+                          它就不再是"事实"，而是"某个人的说法"
+                       🔴 绝不编默认值：ts 形状不合法 → `minutes_ago=null`
+                          + `reason=ts_invalid`，**不许**顶成 0（"数据坏了"≠"她刚来过"）
+                       🔴 fail-open：读库出问题回 `ok=false`，**不抛** —— KaelLife 侧
+                          必须分开处理「不知道」（ok=false）与「确定不在场」（minutes_ago=null）
+
     🧾 · usage 记账（P2，2026-09-22 起）
     usage_store.py     **把上游每次调用回来的 token 账单收下**：四家形状归一成
                        统一 5 个数（OpenAI / Anthropic / DeepSeek / Gemini）+
@@ -117,6 +134,7 @@
     memory.install      注册 /app/ext/memories*（P2 ⑩-a 记忆层，不是房间）
     activity.install    注册 /app/ext/activity*（P2 ⑪ 自主活动带回上下文，全只读）
     usage.install       注册 /app/ext/usage*（P2 usage 记账，**全只读**）
+    presence.install    注册 /app/ext/presence*（P3 前置 ⑬ 在场信号，**全只读**）
 
 每步都是幂等的，重启 N 次结果一致。
 
@@ -143,6 +161,9 @@
                                —— 卡片走的是原版 /channel/out → 前端，不归本层管）
     APP_EXT_USAGE_DISABLED=1  只关 usage 端点（**网关照常记账、表照常建**，
                               只是看不见 —— 「能力没了 ≠ 数据没了」）
+    APP_EXT_PRESENCE_DISABLED=1 只关在场端点（**没有任何数据受影响** ——
+                              这一层本来就不存东西，值是从 messages 现算的；
+                              关掉 = KaelLife 退回"没有这条信号"的老行为）
 
 🔴 **「一个房间挂了不带走别的房间」**：每个房间单独 try —— 工作间注册失败时，
    模型网关必须还在、房子必须照常营业。这条和"整个包吞异常"是同一个原则，
@@ -189,6 +210,8 @@ _ROUTES = [
     "/app/ext/activity", "/app/ext/activity/status", "/app/ext/activity/preview",
     # 🆕 usage 记账（P2）—— **全只读**；写侧只有网关内联一条（没有 POST 写路由）
     "/app/ext/usage/summary", "/app/ext/usage/recent", "/app/ext/usage/status",
+    # 🆕 在场信号收口（P3 前置 ⑬）—— **全只读**；值的来源是 messages 里 direction='in'
+    "/app/ext/presence", "/app/ext/presence/status",
 ]
 
 
@@ -204,7 +227,8 @@ def register(relay, public_prefix: str = "/") -> dict:
     summary = {"ok": False, "schema": None, "owner": None, "sync": None,
                "routes": None, "gateway": None, "rooms": None, "archive": None,
                "context": None, "generate": None, "memory": None, "distill": None,
-               "activity": None, "usage": None, "warnings": [], "error": None}
+               "activity": None, "usage": None, "presence": None,
+               "warnings": [], "error": None}
     if _on("APP_EXT_DISABLED"):
         summary["error"] = "disabled by APP_EXT_DISABLED"
         print("[app_ext] 已按 APP_EXT_DISABLED 关闭，跳过五张表 / 身份层 / 模型网关")
@@ -394,6 +418,20 @@ def register(relay, public_prefix: str = "/") -> dict:
                 summary["usage"] = _ustore.summary_line()
             _step("usage 记账端点", _us)
 
+        # ⑬ 在场信号收口（P3 前置，2026-09-27）
+        #    🔴 它是**纯派生**：值的来源是 `messages` 里最新一条 `direction='in'`
+        #       —— 房子不新增任何状态、不新增任何写入口。挂了 = 这条信号读不到
+        #       （KaelLife 侧退回今天的行为），**聊天一个字都不受影响**。
+        if _on("APP_EXT_PRESENCE_DISABLED"):
+            summary["presence"] = "disabled by APP_EXT_PRESENCE_DISABLED"
+        else:
+            from . import presence as _presence
+
+            def _pr():
+                _presence.install(relay, public_prefix)
+                summary["presence"] = _presence.summary_line()
+            _step("在场信号端点", _pr)
+
         summary["routes"] = list(_ROUTES)
         summary["ok"] = not summary["warnings"]
 
@@ -434,6 +472,8 @@ def register(relay, public_prefix: str = "/") -> dict:
         print(f"[app_ext] {summary['activity']}")
     if summary.get("usage"):
         print(f"[app_ext] {summary['usage']}")
+    if summary.get("presence"):
+        print(f"[app_ext] {summary['presence']}")
     if summary["warnings"]:
         # 🔴 同上：GBK 安全（原本是 `⚠️ N 个步骤被跳过…`）。
         #    这一行只在**有步骤失败时**跑 —— 也就是只在全新 /data 上跑，

@@ -1,0 +1,57 @@
+[PASS] A1 空库 → ok=True 但 found=False（**确定没有**，不是'未知'）
+[PASS] A1b 🔴 空库 active_recent=False（确定不在场 —— 她从没在这间房子里说过话）
+[PASS] A1c source 白纸黑字写出来源（同 ⑩-a 的 source 规矩）
+[PASS] A2 🔴 只有 out → 不算她开口（**拿 MAX(ts) 不筛 direction 就会在这儿错**）
+[PASS] A3 🔴 她说完他回了两句：最新 in 仍是她那句（12 分钟前，不是 10 分钟前）
+[PASS] A4 🔴 语音（direction=in, kind=voice）也算她开口（只筛 kind='user' 会把它们全漏掉）
+[PASS] A5 🔴 通话（direction=in, kind=call）也算她开口（只筛 kind='user' 会把它们全漏掉）
+[PASS] A6 🔴🔴 按 **id**（自增主键）取最新，不按 ts —— ts 是**调用方能指定**的列（`backend/app.py:140`），拿它排序 = 把判据交给写它的人
+[PASS] A7 fold(None) 与 derive(空库) 同形（纯函数是派生的唯一实现）
+[PASS] A8 last_in_ts 原样回（不加工、不截断、不格式化）
+[PASS] A9 `+08:00` 偏移被正常换算（12:00+08 = 04:00Z ⇒ 距 12:40Z 是 520 分钟）
+[PASS] B1 8 分钟前 → active_recent=True（默认窗口 30）
+[PASS] B2 40 分钟前 → active_recent=False
+[PASS] B3 边界：正好 30 分钟 → True（用 `<=` 不是 `<`）
+[PASS] B4 边界：30 分 1 秒 → False
+[PASS] B5 🔴 窗口读 `LILY_ACTIVE_WINDOW_MIN`（**与 KaelLife 同名** ⇒ 口径只有一份）：=5 → 8 分钟前算不在场；=60 → 算在场
+[PASS] B6 坏值 / 空值 → 回落 30 且不抛
+[PASS] B7 `=abc` 不炸（回落 30）
+[PASS] B8 ts 在未来 → 不炸（minutes_ago 为负，仍算在场）
+[PASS] C1 🔴🔴 源码扫描：presence.py **一个写库语句都没有**（含 CREATE INDEX —— 给 messages 加索引也是动它的结构）
+[PASS] C2 🔴 禁止写路由：没有 .post / .put / .delete / .patch 装饰器
+[PASS] C3 🔴 不挂 MCP 门（这是我看的诊断口径，不是给他的记忆）
+[PASS] C4 只读两种写法都在：两条 SQL 都是 SELECT + `connect` 上下文用完即走
+[PASS] C5 🔴🔴 真跑三次 derive：messages 的行 / 正文 / DDL / 索引**逐字节不变**
+[PASS] D0 🔴 `messages` 表还不存在（全新 /data 的第一次）→ fail-open，**不许抛**、也不许假装'她不在'
+[PASS] D0b 同一时刻 count_in → None（不是 0）
+[PASS] D1 🔴 库不可达 → ok=False + reason=read_failed（**不抛异常**）
+[PASS] D1b 🔴🔴 fail 分支里**没有 `active_recent`** —— 那个字段会被读成结论；有它 = 「房子挂了」被读成「她不在」⇒ 他在她身边说话时还推她手机
+[PASS] D1c fail 分支带 detail（查得出来的那种坏）
+[PASS] D2 库不可达时 count_in → None（**不是 0**：0 会被读成'她从没说过话'）
+[PASS] D3 🔴 行畸形（取不到列）→ found=True 但 minutes_ago=None + ts_invalid，**不抛**、不编数
+[PASS] D4 空 dict 行（falsy）与 None **同支**：都当'库里没有 in'，不抛
+[PASS] E1 🔴🔴 9 种非法 ts 全部 → minutes_ago=None + reason=ts_invalid + active_recent=None（'未知'，不是 False）
+[PASS] E2 🔴🔴 非法 ts **绝不顶成 0**（0 分钟 = '她刚刚说过话'，会永久静音他）
+[PASS] E3 🔴 变异证明：把'非法 ts'那条改成'回 0'，本套会红 —— 所以 E1/E2 有牙齿
+[PASS] E4 形状合法就放行（取值不锁死）：`Z` 结尾 / 无秒 / 毫秒 / `+0800` 都认
+[PASS] E5 非法 ts 时 `last_in_ts` 仍**原样保留**（如实，不加工成 None 也不改字）
+[PASS] E6 minutes_ago 是小数（不是整数截断）
+[PASS] E7 真写库（ts='garbage'）→ ok=True/found=True 但算不出（**不假装她刚来过**）
+[PASS] F1 无密钥 → 401（fail-closed）
+[PASS] F2 带密钥 → 200 且 ok=True / found=True / 契约字段齐
+[PASS] F3 端点的 minutes_ago 是活的（≈8，用真实时钟）
+[PASS] F4 status 200 且回答'这一层在不在工作'（窗口 / in 条数 / 最近读数）
+[PASS] F5 🔴🔴 **没有写入口**：POST /presence → 405（一旦能写，它就不是'事实'了）
+[PASS] F6 PUT / DELETE 也没有
+[PASS] F7 🔴 房子这层读不到 → 端点回 **200 + ok=false**（不是 5xx）：「不知道」是这个端点的合法答案，回 5xx 会让'这层坏了'和'整个挂了'看起来一样
+[PASS] F8 install 幂等（第二次什么都不做）
+[PASS] F9 两条路由都在 `__init__._ROUTES` 里
+[PASS] F10 `__init__` 里有第 ⑬ 步 + 逃生开关 + import
+[PASS] F11 verify_all 已接本套
+[PASS] F12 🔴 开关打开时：端点**不挂**（404），且 summary 里点名是开关关的
+[PASS] F13 开着时 register 会挂上它（summary 里是就绪那行，不是开关关的）
+[PASS] F14 🔴 summary_line() GBK 安全（Windows 启动日志会打它）
+[PASS] F15 🔴 presence.py 的 print 里没有 GBK 编不出的符号
+[PASS] F16 🔴 源码扫描：presence 这一层只 SELECT（不 INSERT / 不 UPDATE / 不 DROP）
+
+共 55 项，通过 55，失败 0
