@@ -372,6 +372,72 @@ CORSMiddleware
 >
 > 完整诊断见 **`CoT显示链路.md`**（断点表、两条独立失效路径、改动清单、回退办法）。
 
+### 🆕 P3 通车预演（2026-09-27）：网关**认什么、不认什么**
+
+通车 = 把身体（`examples/api_loop.py`）的 `LLM_API_BASE` 指向房子。动手之前先做了一遍
+**预演**：不起真身体，直接用**身体会发的那个形状**打网关，看它会不会悄悄变样。
+验收 = `tools/llm_route_check.py`（第 17 套，44 项）。
+
+#### 身体真正会发什么（读代码读出来的，不是猜的）
+
+| 谁 | 形状 |
+|---|---|
+| `examples/api_loop.py:293`（聊天的身体） | `model` / `messages` / `temperature` / `max_tokens` / `stream` |
+| `KaelLife/scheduler.py:1616 _llm_json`（自主醒来那侧） | `model` / `messages` / **`response_format={"type":"json_object"}`** / `temperature` / `max_tokens` |
+
+🔴 两边**都不发 `tools`** —— Kael 的工具是**提示词驱动**的（工具表渲染进 prompt），
+要走 KaelLife 的 `MCP_SERVERS`，不走 chat 请求体。
+
+#### 🔴 修掉的那个病：`response_format` 被静默丢
+
+`normalize_request` 改之前**连一个 `response_format` 分支都没有**（白名单只做在
+`role` 那一层）→ 身体每次 JSON 调用带的这个字段，被**悄悄丢掉**。
+
+为什么它比"报错"危险得多：
+
+- 报错 = fail-loud，通车第一天就发现；
+- 静默丢 = 表现成"**模型偶尔不吐 JSON**"→ 所有排查方向都指向 prompt，**永远查不到网关**。
+
+改法（三条都是"不猜"）：
+
+1. `normalize_request` **接住**它：白名单式只放行 `json_object` / `text`，只保留 `type`
+   一个键；形状不对 / `json_schema` → `400 bad_param`。
+2. `adapt()` 对 **openai 格式透传**（DeepSeek / 硅基流动 / OpenAI / 中转站都认这个标准字段）。
+3. 🔴 对 **anthropic / gemini 显式 `400 unsupported_param`** —— 它们的原生协议没有这个字段。
+   翻译成等价手段（Anthropic 得自己造 tool 再 `tool_choice`）超出"网关 v1 不猜"的边界，
+   而且翻译错了比拒绝更糟（会输出一段"看着像 JSON"的东西，然后在身体那边解析失败）。
+   **不传时出站 body 逐字节回到改动前** —— 老断言、老客户端零影响。
+
+#### 🔴 顺手补的同一个病：顶层键是**纯静默丢**的
+
+预演时 C1/C2 红了才照见：`role` 是白名单式的（`tool` role 会被拒），
+但**顶层键一个检查都没有** —— 传 `tools` 进来 = 被当普通字段丢掉，
+模型永远不调工具，而**响应看起来完全正常**（表现是"他今天怎么不逛论坛了"）。
+
+判据只有一条：**丢掉它，调用方无法从响应里察觉行为变了**。按这条钉住两类：
+
+- 原生工具调用协议（`tools` / `tool_choice` / `functions` / `function_call`）
+  → `400 unsupported_param`，并说清"工具请走身体那一侧，不要走这条链路"
+- `n`（多候选）> 1 → `400`（上游只回一条，调用方会以为模型只给了一个答案）
+
+⚠️ **不是**"所有未知键都拒"：OpenAI 协议字段很多（`user` / `seed` / `logprobs` /
+`frequency_penalty`…），各家中转站认的集合又不一致 —— 全拒会让通车变脆
+（SDK 某天多发一个字段就挂）。这里只钉住**会静默改变行为**的那几个，
+其余维持白名单式"只补不发"（见 `llm_routes._PARAM_KEYS`）。
+
+#### 顺手一起验了的（全部"从出口倒着验"）
+
+- 🔴 上游**真的收到了** `response_format` / `temperature` / `max_tokens`
+  （断言打在上游收到的字节上，不打在函数返回值上）
+- 流式 / 非流式 / 两条别名路径都走通；别名按 `stream` 分流（OpenAI 语义）
+- 🔴 被拒的请求：**上游一次都没被调用**、**usage 不记账**（没发生就不该有账）
+- 🔴 ⑧⑪ 注入与参数层**共存**：同一份请求里，上游 system 有摘要、body 里有
+  `response_format`，而 `messages` 每条只有 `role`/`content`（没被加料）、
+  body 键集合没多一个
+
+> ⚠️ 这一节只说明"**接通了不会变样**"。真正通车（把身体指过来、让他开始走这条路）
+> 是 P3 的正题 —— 见根 `Kaelhome总纲-融合稿.md`。
+
 ## 第七道缝：房间层（2026-09-18）—— **一扇 MCP 门 + 第一间房（工作间）**
 
 前面六道缝解决的是"房子自己能不能住"。这一道回答另一个问题：

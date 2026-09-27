@@ -1,0 +1,50 @@
+P3 通车预演验收（第 17 套）
+工具：tools/llm_route_check.py
+断面：examples/api_loop.py:293（聊天身体） + KaelLife/scheduler.py:1616 _llm_json（自主醒来）
+
+[PASS] A1 身体（_llm_json）的完整形状 → normalize 通过
+[PASS] A2 🔴 response_format 进了 params（这次修的就是这个静默丢）
+[PASS] A3 只保留 type 一个键（不放行 json_schema 的附属字段）
+[PASS] A4 response_format.type=text 也放行（OpenAI 合法值）
+[PASS] A5 🔴 不传 response_format → params 里没有这个键（零副作用）
+[PASS] A6 🔴 response_format 非对象 → 400 bad_param（不是静默丢）
+[PASS] A7 🔴 response_format 缺 type → 400 bad_param（不是静默丢）
+[PASS] A8 🔴 json_schema 不在白名单 → 400（网关 v1 不猜）
+[PASS] A9 openai 适配：response_format 真的进了上游 body
+[PASS] A10 🔴 不传时上游 body 不含这个键（逐字节回到改动前）
+[PASS] A11 🔴 anthropic + response_format → 400 unsupported_param（不静默丢）
+[PASS] A12 🔴 gemini + response_format → 400 unsupported_param（不静默丢）
+[PASS] A13 anthropic 不带 response_format → 照常出 body（没误伤）
+[PASS] A14 gemini 不带 response_format → 照常出 body（没误伤）
+[PASS] A15 身体形状：max_tokens 缺省也能过（兜底 DEFAULT_MAX_TOKENS）
+[PASS] A16 🔴 顶层 tools / functions / function_call / tool_choice → 400 unsupported_param
+[PASS] A17 🔴 n=2（多候选）→ 400；n=1 放行（默认行为无害）
+[PASS] B1 🔴 非流式端点（身体的主路）→ 200 且上游真收到
+[PASS] B2 响应是 OpenAI 兼容形状（object=chat.completion + message.content）
+[PASS] B3 🔴 上游真收到了 response_format（通车之后 JSON 模式没丢）
+[PASS] B4 上游真收到了 temperature / max_tokens
+[PASS] B5 上游收到的 messages = [system, user]（人格进 system）
+[PASS] B6 流式端点 → SSE 逐段 + 以 [DONE] 收尾
+[PASS] B7 别名 /llm/chat/completions 带 stream → 走流式（SSE）
+[PASS] B8 别名 /llm/v1/chat/completions 不带 stream → 非流式（OpenAI 语义）
+[PASS] C1 🔴 带 tools → 400 unsupported_param（原生工具协议：不静默丢）
+[PASS] C2 🔴 被拒时上游**一次都没被调用**（没发生就不该有请求）
+[PASS] C3 🔴 role:"tool" → 400 unsupported_role（用户 09-16 定的那条）
+[PASS] C4 🔴 json_schema → 400 bad_param（网关 v1 不猜）
+[PASS] C5 🔴 被拒时上游零调用（key 不在上游、钱不花）
+[PASS] C6 🔴 无密钥 → 401（四个端点都 fail-closed）
+[PASS] C7 未知供应商 → 400 unknown_provider
+[PASS] D1 🔴 带 response_format 的请求：注入仍然生效（上游 system 里有摘要）
+[PASS] D2 🔴 同一份请求：上游也真收到了 response_format（两边都在，互不吃）
+[PASS] D3 🔴 上游收到的 messages 里每条只有 role/content（形状没被加料）
+[PASS] D4 🔴 上游 body 的键集合 ⊆ 白名单（没多发明字段）
+[PASS] E1 非流式一次 → usage_log 多一行 route=complete
+[PASS] E2 流式一次 → route=chat
+[PASS] E3 🔴 被 400 拒的请求 → 不记账（没发生就不该有账）
+[PASS] F1 🔴 providers.py 里 response_format 有处理（不再是零分支）
+[PASS] F2 🔴 anthropic / gemini 两处都显式拒（不静默丢）
+[PASS] F3 🔴 透传是「有值才加」—— 网关不主动发明参数（没有硬编码默认值）
+[PASS] F4 拒绝路径给的是**可行动**的话（说清换什么供应商）
+[PASS] F5 🔴 原生工具协议字段被显式拒（顶层键不再是静默丢）
+
+共 44 项，通过 44，失败 0

@@ -85,6 +85,10 @@ MAX_SYSTEM_CHARS = 40_000
 # 供应商没给 max_tokens 时的兜底（Anthropic 必填这个字段）
 DEFAULT_MAX_TOKENS = 4096
 
+#: 🔴 网关**认识但不支持**的原生工具调用协议字段（判据见 `normalize_request` 里那段）。
+#:    它们不是"不认识的杂字段"，而是"丢掉了会让行为静默改变"的那一类。
+_TOOL_PROTOCOL_KEYS = ("tools", "tool_choice", "functions", "function_call")
+
 
 class ProviderError(Exception):
     """供应商相关的可预期错误。`status` 是准备回给调用方的 HTTP 码。"""
@@ -423,6 +427,52 @@ def normalize_request(body: Any) -> dict:
     if len(raw) > MAX_MESSAGES:
         raise ProviderError("too_many_messages", f"messages 最多 {MAX_MESSAGES} 条", 400)
 
+    # ── 🔴 认识但不支持的顶层键：显式 400，**绝不静默丢**（2026-09-27 补）──────
+    #
+    # 判据只有一条：**丢掉它，调用方无法从响应里察觉行为变了。**
+    #
+    #   · 工具调用协议（tools / tool_choice / functions / function_call）：
+    #     丢了 → 模型永远不调工具，而响应看起来完全正常
+    #     （表现是"他今天怎么不逛论坛了"，查不到网关头上）。
+    #   · `n`（要几个候选）：丢了 → 上游只回 1 条，
+    #     调用方会以为"模型只给了一个答案"。
+    #
+    # 这两类都不会报错、也不会在响应里留痕 —— 正是上面那句"丢一半的上下文
+    # 比报错危险得多"的原形。补之前它们是**纯静默**的：顶层键一个检查都没有，
+    # 白名单只做在 `role` 那一层（验收 C1/C2 红了才照见）。
+    #
+    # ⚠️ 为什么**不是**"所有未知键都拒"：OpenAI 协议字段很多（user / seed /
+    #    logprobs / frequency_penalty…），各家中转站认的集合又不一致 ——
+    #    全拒会让通车变脆（SDK 某天多发一个字段就挂），那等于把网关变成
+    #    "要跟 OpenAI 协议同步维护的清单"。这里只钉住**会静默改变行为**的那几个，
+    #    其余维持白名单式"只补不发"（见 `llm_routes._PARAM_KEYS`）。
+    #
+    # 🔴 对通车零影响：身体（`examples/api_loop.py:293`）与 KaelLife
+    #    （`_llm_json`）发的 body 都只有 model/messages/温度/长度/stream，
+    #    一个都不在这张表里。
+    for _k in _TOOL_PROTOCOL_KEYS:
+        if body.get(_k) is not None:
+            raise ProviderError(
+                "unsupported_param",
+                f"网关不支持 {_k}（原生工具调用协议）：它塞进 chat 请求体只会被上游"
+                f"当普通字段丢掉，而响应看起来完全正常。工具请走身体那一侧"
+                f"（KaelLife 的 MCP_SERVERS），不要走这条链路",
+                400,
+            )
+    _n = body.get("n")
+    if _n is not None:
+        try:
+            _n_int = int(_n)
+        except Exception:
+            _n_int = -1
+        if _n_int != 1:
+            raise ProviderError(
+                "unsupported_param",
+                f"网关不支持 n={_n!r}（多候选）：上游只会回一条，"
+                f"调用方会以为模型只给了一个答案",
+                400,
+            )
+
     system_parts, msgs = [], []
     total = 0
     for i, m in enumerate(raw):
@@ -485,6 +535,35 @@ def normalize_request(body: Any) -> dict:
             params["stop"] = stop[:4]
         else:
             raise ProviderError("bad_param", "stop 必须是字符串或字符串数组", 400)
+
+    # ── 🆕 P3 通车前置（2026-09-27）：`response_format` 必须被**接住** ──────
+    #
+    # 🔴 为什么这是必修项，而不是"顺手加个功能"：
+    #    身体的**每一次** JSON 调用（`_llm_json`：决策 / 日记 / 论坛规划 /
+    #    见闻 / 蒸馏…）都带 `response_format={"type":"json_object"}`。
+    #    而在这之前，这个字段在整条归一化里**一个分支都没有** → 被静默丢掉。
+    #    通车之后的表现会是："模型偶尔不吐 JSON" —— 而排查方向会全部指向
+    #    prompt 写得不好，**永远查不到网关这边**。被拒是 fail-loud（安全），
+    #    静默丢是 fail-silent（危险），后者正是这条要根治的病。
+    #
+    # 🔴 白名单式（与 `tool` role、`_PARAM_KEYS` 同一个风格）：
+    #    只放行 OpenAI 协议里**上游普遍认**的两个值。
+    #    `json_schema` 这类新形态大量中转站直接 400 —— 与其让上游用一句
+    #    看不懂的话把我们拒掉，不如在这儿说清楚（网关 v1 **不猜**）。
+    #    只保留 `type` 一个键：`json_schema` 那些附带字段既然不放行，
+    #    就一个都不带出去（免得某天有人以为它们是透传的）。
+    _rf = body.get("response_format")
+    if _rf is not None:
+        if not isinstance(_rf, dict):
+            raise ProviderError("bad_param", "response_format 必须是对象", 400)
+        _rtype = str(_rf.get("type") or "").strip()
+        if _rtype not in ("json_object", "text"):
+            raise ProviderError(
+                "bad_param",
+                f"response_format.type={_rtype!r} 不支持（网关只透传 json_object / text）",
+                400,
+            )
+        params["response_format"] = {"type": _rtype}
 
     return {
         "system": system,
@@ -555,6 +634,29 @@ def _effort_payload(provider_id: str, effort: str):
     return field, lvl
 
 
+def _no_response_format(params: dict, label: str) -> None:
+    """🔴 原生协议没有 `response_format` 的供应商：**显式拒绝，绝不静默丢**。
+
+    这个函数存在的**唯一**理由就是"不静默" —— 它什么都不做（什么都不返回）
+    才是改之前的行为：字段被丢掉，调用方以为 JSON 模式生效了。
+
+    为什么不去翻译成等价手段：Anthropic 要强制 JSON 得自己造一个 tool 再
+    `tool_choice`，Gemini 要用它自己的 `responseMimeType` —— 两套都超出
+    "网关 v1 不猜"的边界，而且翻译错了比拒绝更糟（它会让模型输出一段
+    看起来像 JSON 的东西，然后在身体那边解析失败）。
+
+    真要跑 JSON 模式：去设置页换成 OpenAI 系供应商（DeepSeek / 硅基流动 /
+    中转站都是 openai 格式），或者把这个参数去掉。
+    """
+    if params.get("response_format"):
+        raise ProviderError(
+            "unsupported_param",
+            f"{label}原生协议不支持 response_format"
+            f"（请改用 OpenAI 系供应商，或去掉这个参数）",
+            400,
+        )
+
+
 # ---------------------------------------------------------------------------
 # 适配层：内部格式 → 各供应商的真实 (url, headers, body)
 # ---------------------------------------------------------------------------
@@ -592,6 +694,13 @@ def adapt(provider_id: str, model: str, req: dict) -> tuple:
             body["top_p"] = top_p
         if stop:
             body["stop"] = stop
+        # 🆕 P3 通车前置（2026-09-27）：`response_format` **透传**。
+        #    openai 格式的上游（DeepSeek / SiliconFlow / OpenAI / 中转站）
+        #    都认这个标准字段，透传 = 不猜。
+        #    🔴 只出现在调用方**显式传了**的时候 —— 不传时 body 逐字节回到改动前，
+        #       所以老断言、老客户端一律不受影响（这一条验收里钉死了）。
+        if params.get("response_format"):
+            body["response_format"] = params["response_format"]
         # 🆕 P2 usage 记账（2026-09-22）：**流式必须开口要，上游才给账单**。
         #    为什么默认开、为什么留开关，见 `_stream_usage_on()` 的 docstring。
         # 🔴 只加在**流式**上：非流式的 usage 本来就随响应体一起回来，加了反而多余
@@ -609,6 +718,7 @@ def adapt(provider_id: str, model: str, req: dict) -> tuple:
 
     # ── ② Anthropic 官方：x-api-key 而非 Bearer；system 是顶层字段 ──
     if fmt == "anthropic":
+        _no_response_format(params, "Anthropic")   # 🆕 不静默丢，见函数 docstring
         url = p["endpoint"] + "/messages"
         headers = {
             "x-api-key": key,                          # ⚠️ 不是 Authorization
@@ -634,6 +744,7 @@ def adapt(provider_id: str, model: str, req: dict) -> tuple:
 
     # ── ③ Gemini：key 在 query；content → parts；assistant → "model" ──
     if fmt == "gemini":
+        _no_response_format(params, "Gemini")      # 🆕 不静默丢，见函数 docstring
         verb = "streamGenerateContent" if stream else "generateContent"
         url = f"{p['endpoint']}/models/{quote(model, safe='')}:{verb}"
         sep = "&" if "?" in url else "?"
