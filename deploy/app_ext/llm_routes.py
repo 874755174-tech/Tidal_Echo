@@ -541,14 +541,18 @@ def install(relay, public_prefix: str = "/") -> None:
     # ── 🆕 OpenAI 标准路径别名（P3 通车前置）──────────────────────────────
     #
     # 注册两条，是为了让 `LLM_API_BASE` 填错一层也能活：
-    #     https://<域名>/relay/app/ext/llm/v1   → /app/ext/llm/v1/chat/completions   ← 推荐填这个
-    #     https://<域名>/relay/app/ext/llm      → /app/ext/llm/chat/completions
+    #     https://<域名>/app/ext/llm/v1   → /app/ext/llm/v1/chat/completions   ← 推荐填这个
+    #     https://<域名>/app/ext/llm      → /app/ext/llm/chat/completions
     #
-    # 🔴 注意路径里那个 **`/relay`**（2026-09-28 更正）：它**不能省**。
-    #    房子的对外前缀是 `PUBLIC_PREFIX`（`backend/app.py:57`，默认 `/relay`），
-    #    由 `deploy/serve.py` 的 `_strip_public_prefix` 中间件在下游剥掉
-    #    —— 少了它，路由表里就没有这条裸路径，请求是 **404 而不是 400**。
-    #    （本行原先写作 `/app/ext/llm/v1`，漏了前缀，已按实测核准改正。）
+    # 🔴 前缀 `/relay` 是**可选**的（2026-09-28 线上实测，两种写法都通）：
+    #    路由注册在**裸路径** `base = "/app/ext"`（本文件 `install()` 第 243 行）上，
+    #    而 `deploy/serve.py` 的 `_strip_public_prefix` 中间件只做一件事 ——
+    #    把**带** `/relay` 的请求剥成裸路径，好让前端（`API_BASE="/relay"`）也能用。
+    #    ⇒ 「`/relay/app/ext/llm/v1`」和「`/app/ext/llm/v1`」**都命中同一条路由**。
+    #    实测（POST，不带 key）：两条都是 **401**（鉴权先跑），
+    #    而不存在的路径两条都是 **404** ⇒ 前缀不是"必须"，是"两种都行"。
+    #    ⚠️ 别再写"少 /relay 就 404" —— 那是我 09-28 上一版注释里的**错误推断**
+    #       （只在纸面读 `backend/app.py:57` 的默认值，没实测），当天已实测更正。
     #
     # 🔴 stream 的默认值按 **OpenAI 语义**取（没带 = 非流式），
     #    跟 `normalize_request` 里默认 True 不同 —— 那边默认 True 是为
