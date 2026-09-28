@@ -541,8 +541,14 @@ def install(relay, public_prefix: str = "/") -> None:
     # ── 🆕 OpenAI 标准路径别名（P3 通车前置）──────────────────────────────
     #
     # 注册两条，是为了让 `LLM_API_BASE` 填错一层也能活：
-    #     https://<域名>/app/ext/llm/v1   → /app/ext/llm/v1/chat/completions   ← 推荐填这个
-    #     https://<域名>/app/ext/llm      → /app/ext/llm/chat/completions
+    #     https://<域名>/relay/app/ext/llm/v1   → /app/ext/llm/v1/chat/completions   ← 推荐填这个
+    #     https://<域名>/relay/app/ext/llm      → /app/ext/llm/chat/completions
+    #
+    # 🔴 注意路径里那个 **`/relay`**（2026-09-28 更正）：它**不能省**。
+    #    房子的对外前缀是 `PUBLIC_PREFIX`（`backend/app.py:57`，默认 `/relay`），
+    #    由 `deploy/serve.py` 的 `_strip_public_prefix` 中间件在下游剥掉
+    #    —— 少了它，路由表里就没有这条裸路径，请求是 **404 而不是 400**。
+    #    （本行原先写作 `/app/ext/llm/v1`，漏了前缀，已按实测核准改正。）
     #
     # 🔴 stream 的默认值按 **OpenAI 语义**取（没带 = 非流式），
     #    跟 `normalize_request` 里默认 True 不同 —— 那边默认 True 是为
