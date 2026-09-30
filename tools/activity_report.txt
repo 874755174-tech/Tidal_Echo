@@ -22,18 +22,16 @@
 [PASS] A22 inject_text 含 MARK（去重靠它）
 [PASS] A23 正文超 TEXT_MAX(700) 被截（框架话不算进去）
 [PASS] A24 框架话 = 你自己做的、不是别人告诉你的
-[PASS] B1 prev_in_id = 上一条她自己说的话
-[PASS] B2 🔴 窗口内 (after, before) 真取到两段
-[PASS] B3 🔴 边界外的活动**取不到**（before 之上 / after 之下都不行）
-[PASS] B4 返回**升序**（拼文本要正的）
-[PASS] B5 只认 kind='activity'（act / reply 行不会被当活动）
-[PASS] B6 没有上一条 → 不设下界（after=0）
-[PASS] B7 `__legacy__`（无 api_session）也认
-[PASS] B8 超上限取**最近** 3 段
-[PASS] B9 非法形状的活动行被跳过（不进 items）
+[PASS] B1 🔴 recent 取到全部两段（不要求夹在她两句话之间）
+[PASS] B2 返回**升序**（拼文本要正的）
+[PASS] B3 只认 kind='activity'（act / reply 行不会被当活动）
+[PASS] B4 超上限取**最近** 3 段（滚动更新）
+[PASS] B5 非法形状的活动行被跳过（不进 items）
+[PASS] B6 🔴 resolve 不反查会话：任意 probe 都返回最近 N 段（不再 session_unknown）
+[PASS] B7 无 activity → no_activity（不硬造、不编造）
 [PASS] C1 messages 为空 → 不插
-[PASS] C2 🔴 认不出会话 → session_unknown，body 逐字节不变
-[PASS] C3 窗口里没活动 → nothing_new
+[PASS] C2 🔴 不反查会话：probe 不在库里也照样注入（旧逻辑会 session_unknown）
+[PASS] C3 库里没 activity → no_activity（不硬造）
 [PASS] C4 🔴 命中：插了一条 system，非 system 部分**逐字节相同**
 [PASS] C5 插在已有 system **之后**（人格 → 摘要 → 足迹）
 [PASS] C6 🔴 ⑧ 与 ⑪ 同时注入 → 摘要在前、足迹在后（从旧到新）
@@ -42,7 +40,7 @@
 [PASS] C9 🔴 会撑爆 system 上限 → 不插（绝不让注入把说话搞挂）
 [PASS] C10 body 形状不对 → fail-open（不抛）
 [PASS] C11 🔴 注入后的 body 真能被 normalize_request 吃下（system 已合并）
-[PASS] C12 last_injection 记了会话与段数
+[PASS] C12 last_injection 记了段数与字符数（不再记会话——常驻注入不反查）
 [PASS] C13 🔴 resolve/apply 是**只读**的：messages 行数与正文指纹不变
 [PASS] D1 三条路由都在 `_ROUTES`
 [PASS] D2 register() 里有第 ⑪ 步（且带逃生开关）
@@ -69,7 +67,7 @@
 [PASS] D13 GET /app/ext/activity → 200 且归一化
 [PASS] D14 GET /status → 开关 / 窗口 / limits 都在
 [PASS] D15 POST /preview → 只算不插，回 text（不写库）
-[PASS] D16 /preview 认不出会话 → would_inject=false（不瞎猜）
+[PASS] D16 /preview 不反查会话：probe 不存在也回最近 N 段（常驻）
 [PASS] D17 🔴 没有 PUT / DELETE 路由（405）
 
-共 73 项，通过 73，失败 0
+共 71 项，通过 71，失败 0

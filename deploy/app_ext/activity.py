@@ -41,24 +41,27 @@ Lily 2026-09-21 原话（这是本层存在的理由）：
 1. **fail-open。** 任何异常 / 任何不确定 → 原样放行，一个字段都不改。
    这条比 ⑧ 更要紧一点：⑧ 出问题只是"少一段摘要"，本层出问题是"说不了话"。
 2. **只插不删。** 不动任何已有消息、不动顺序（沿用 ⑧ 的纪律与 `insert_index`）。
-3. **认不出会话就不注入。** 复用 `context.last_user_text` / `context.session_of`
-   —— **会话是怎么认出来的只该有一份实现**（否则两边对"这是哪个会话"给出不同答案）。
+3. **认不出会话也照样注入（常驻）。** 复用 `context.last_user_text` 只做
+   "这轮是用户在说话"这个门；**不再**拿 `session_of` 反查会话来切窗口
+   （他只有一个，行迹是同一段人生，不该被"她在哪个会话"切成一段段）。
 4. 🔴 **确定性：本层一次 LLM 都不调、一个字都不写。**
    注入的文本是**已落库的行**逐字拼出来的 —— 所以**不可能编造他没做过的事**。
    这正对上「不许编造经历」那条铁律（§5.4「A 类永不由模型改写」）。
 
-## 窗口规则：「她上次开口之后，到我这次开口之前」
+## 带哪几段：最近 `ACTIVITY_MAX_ITEMS` 段（常驻，滚动更新）
 
 不引入任何新状态（不加水位线、不加游标），只用库里已有的东西：
 
-    before = 当前这条用户消息的 id（由 `session_of` 反查出来，就是它）
-    after  = 该会话里**上一条**她自己说的话的 id（没有就 0）
+    items = 库中 kind='activity' 的行，按 id 倒序取最近 `ITEMS_MAX` 段
+            （`recent()` → `load_window(0, 0, limit)`）
 
-    ⇒ 取 `after < id < before` 的活动行，最多 `ACTIVITY_MAX_ITEMS` 段（取最近的）
+    ⇒ 每轮说话都带上这最近 N 段；新行迹来了顶掉最旧的那段。
 
-**为什么是这个窗口**：它就是"我上次跟她说完话之后，我自己去做了什么"。
-而且**自带清账**：她下次再开口时，窗口右端前移 → 上一批自动落出窗口，
-不会反复把同一件事喂给他（那是"记忆"变"复读"）。
+**为什么改掉旧窗口**：旧规则「她上次开口之后 → 这次开口之前」有个反直觉的坑——
+她第一句没问、第二句再问，窗口就空了，他"眨眼就忘"（Lily 2026-09-30 亲口指出）。
+"我最近做过什么"该是**常驻事实**，不是被她说话节奏切成的一次性快照。
+代价是每轮多带 ~N 段摘要（一段约 190 字，3 段 < 600 字，远低于 system 上限），
+这是"记得"，不是"复读"（过渡方案；终态 = 行迹进 OB、聊天时自然浮现，P3 判据③）。
 
 ## 数据形状（写侧 = 身体，读侧 = 本文件）
 
@@ -132,6 +135,19 @@ _RE_STATE = re.compile(r"^[a-z0-9_-]{1,16}$")
 _RE_HHMM = re.compile(r"[T ](\d{2}:\d{2})")
 
 _LAST_INJECT: dict = {}
+_LAST_SKIP: dict = {}          # 🔍 跳过也留痕：`last_injection` 只记成功，
+                               #    排查"为什么没注入"以前是盲区（2026-09-30 实测）
+
+
+def _skip(info: dict) -> dict:
+    """把一次"决定不注入"记进 `_LAST_SKIP` 后**原样返回**（不改返回形状）。"""
+    rec = {"at": now_iso(), "reason": info.get("reason") or ""}
+    for k in ("session_id", "after_id"):
+        if info.get(k):
+            rec[k] = info[k]
+    _LAST_SKIP.clear()
+    _LAST_SKIP.update(rec)
+    return info
 
 
 def now_iso() -> str:
@@ -298,7 +314,8 @@ def inject_text(items) -> str:
     """
     body = build_block(items)[:TEXT_MAX]
     return (f"[{MARK} —— 你自己做的，不是别人告诉你的；"
-            f"原文在你自己的房间（书房）里，这里只是记事]\n{body}")
+            f"原文在你自己的房间（书房）里，这里只是记事。"
+            f"当她问起你醒来/最近做了什么，这些就是你的经历本身，照实说即可]\n{body}")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -337,31 +354,12 @@ def load_window(relay, after_id: int, before_id: int, limit: int = None) -> list
 
 
 def recent(relay, limit: int = 20) -> list:
-    """最近的几段活动（不分窗口）—— 给只读端点/排查用。"""
-    return load_window(relay, 0, 0, limit)
+    """最近的几段活动（不分窗口）—— `resolve` 的入口 + 只读端点/排查共用。
 
-
-def prev_in_id(relay, session_id: str, before_id: int) -> int:
-    """该会话里**上一条她自己说的话**的 id。没有 → 0（= 窗口不设下界）。
-
-    🔴 口径必须与身体的 `relay_rows` / `context.load_rows` 一致：
-       `kind IN ('user','voice')` + `meta.api_session`（**是 api_session**）。
+    常驻注入（2026-09-30）之后，它**就是**注入取数的唯一来源：每轮都带最近
+    `ITEMS_MAX` 段，滚动更新。旧窗口函数 `prev_in_id` 已随窗口语义一起删除。
     """
-    from . import schema as _schema
-    from . import sessions_store as S
-
-    sid = (session_id or "").strip()
-    sql_sid = "" if sid in ("", S.LEGACY_SESSION_ID) else sid
-    with _schema.connect(relay) as conn:
-        row = conn.execute(
-            "SELECT MAX(id) AS id FROM messages "
-            "WHERE direction = 'in' AND kind IN ('user','voice') AND id < ? "
-            "AND COALESCE(json_extract(meta, '$.api_session'), '') = ?",
-            (int(before_id or 0), sql_sid)).fetchone()
-    try:
-        return int((row or {})["id"] or 0)
-    except Exception:
-        return 0
+    return load_window(relay, 0, 0, limit)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -369,25 +367,23 @@ def prev_in_id(relay, session_id: str, before_id: int) -> int:
 # ══════════════════════════════════════════════════════════════════════════
 
 def resolve(relay, probe_text: str) -> dict:
-    """给"当前这条用户消息的原文" → 算出这次该带回去哪几段。**只读。**
+    """算出这次该带回去哪几段。**只读。**
 
     返回 `{ok, reason, session_id, message_id, after_id, items, text, chars}`。
     任何一步不确定 → `ok=True, text=""`（调用方照常放行）。
-    """
-    from . import context as C
 
+    🔴 2026-09-30 改「常驻注入」：原「她上次开口→这次开口」窗口作废——
+    那个窗口会让"她第一句没问、第二句再问"就查无此行迹（违背正常聊天逻辑，
+    Lily 亲口指出）。现在**每轮都带他最近的 `ITEMS_MAX` 段经历**（滚动更新），
+    "我最近做过什么"是他上下文的常驻事实，不再是"只在你开口那瞬见一眼"的快照。
+    `probe_text` 仍由调用方传入（用来确认"这轮是用户在说话"），
+    但**不再用于反查会话**——他只有一个，行迹是同一段人生，跟会话无关。
+    """
     out = {"ok": True, "reason": "", "session_id": "", "message_id": 0,
            "after_id": 0, "items": [], "text": "", "chars": 0}
-    found = C.session_of(relay, probe_text or "")
-    if not found:
-        out["reason"] = "session_unknown"
-        return out
-    out["session_id"] = found["session_id"]
-    out["message_id"] = int(found["message_id"] or 0)
-    out["after_id"] = prev_in_id(relay, found["session_id"], out["message_id"])
-    items = load_window(relay, out["after_id"], out["message_id"])
+    items = recent(relay, ITEMS_MAX)
     if not items:
-        out["reason"] = "nothing_new"
+        out["reason"] = "no_activity"
         return out
     text = inject_text(items)
     out["items"] = items
@@ -404,39 +400,42 @@ def apply(relay, body) -> dict:
     返回诊断 dict（验收靠它、排查靠它）。`ok=False` 时 body 一定没被改过。
     """
     if _off():
-        return {"ok": False, "injected": False, "reason": "disabled"}
+        return _skip({"ok": False, "injected": False, "reason": "disabled"})
     if not isinstance(body, dict):
-        return {"ok": False, "injected": False, "reason": "bad_body"}
+        return _skip({"ok": False, "injected": False, "reason": "bad_body"})
     msgs = body.get("messages")
     if not isinstance(msgs, list) or not msgs:
-        return {"ok": True, "injected": False, "reason": "no_messages"}
+        return _skip({"ok": True, "injected": False, "reason": "no_messages"})
 
     for m in msgs:                                # 同一次请求别插两次（上游重试）
         if isinstance(m, dict) and MARK in str(m.get("content") or ""):
-            return {"ok": True, "injected": False, "reason": "already_present"}
+            return _skip({"ok": True, "injected": False, "reason": "already_present"})
 
     from . import context as C
     from . import providers as P
 
     probe = C.last_user_text(msgs)
     if not probe:
-        return {"ok": True, "injected": False, "reason": "no_user_text"}
+        return _skip({"ok": True, "injected": False, "reason": "no_user_text"})
 
     try:
         got = resolve(relay, probe)
     except Exception as e:
-        return {"ok": True, "injected": False, "reason": f"resolve_failed:{type(e).__name__}"}
+        return _skip({"ok": True, "injected": False,
+                      "reason": f"resolve_failed:{type(e).__name__}"})
     if not got.get("text"):
-        return {"ok": True, "injected": False, "reason": got.get("reason") or "empty",
-                "session_id": got.get("session_id") or "", "after_id": got.get("after_id") or 0}
+        return _skip({"ok": True, "injected": False,
+                      "reason": got.get("reason") or "empty",
+                      "session_id": got.get("session_id") or "",
+                      "after_id": got.get("after_id") or 0})
 
     text = got["text"]
     # 🔴 会撑爆网关上限就**不注入**。撑爆 → `normalize_request` 抛 `too_large` → 400
     #    → 这次说话直接失败。"更好用"绝不能变成"说不了话"。
     if len(msgs) + 1 > P.MAX_MESSAGES:
-        return {"ok": True, "injected": False, "reason": "too_many_messages"}
+        return _skip({"ok": True, "injected": False, "reason": "too_many_messages"})
     if C.system_chars(msgs) + len(text) + 2 > P.MAX_SYSTEM_CHARS:
-        return {"ok": True, "injected": False, "reason": "system_too_large"}
+        return _skip({"ok": True, "injected": False, "reason": "system_too_large"})
 
     idx = C.insert_index(msgs)
     msgs.insert(idx, {"role": "system", "content": text})
@@ -513,7 +512,8 @@ def _install_routes(relay, public_prefix: str = "/") -> None:
                        "actions_max": ACTIONS_MAX, "line_max": LINE_MAX},
             "counts": c,
             "last_injection": last_injection(),
-            "window": "她上次开口之后 → 这次开口之前（after_id < id < before_id）",
+            "last_skip": dict(_LAST_SKIP),
+            "window": "常驻注入：每轮带最近 N 段（滚动更新，不再按她开口切窗口）",
             "note": "本层只读 + 只注入；不调 LLM、不写 messages、不挂 MCP 门",
         })
 
@@ -536,10 +536,9 @@ def _install_routes(relay, public_prefix: str = "/") -> None:
             from . import context as C
             msgs = body.get("messages")
             probe = C.last_user_text(msgs) if isinstance(msgs, list) else ""
-        if not probe:
-            return _json({"ok": False, "reason": "no_probe_text"}, 400)
+        # 常驻注入后 probe 不再用于反查会话 —— 没有也能看（直接看最近 N 段）。
         try:
-            got = resolve(relay, probe)
+            got = resolve(relay, probe or "")
         except Exception as e:
             return _json({"ok": False, "reason": "resolve_failed",
                           "detail": f"{type(e).__name__}: {e}"}, 500)
@@ -552,7 +551,7 @@ def _install_routes(relay, public_prefix: str = "/") -> None:
             "message_id": got.get("message_id"),
             "items": got.get("items"),
             "text": got.get("text"),
-            "note": "只算不插：这条 system 会在下次说话时出现（如果窗口里确实有东西）",
+            "note": "只算不插：这条 system 会在下次说话时出现（每轮都带最近 N 段）",
         })
 
 
@@ -572,4 +571,4 @@ def summary_line() -> str:
     """启动时打一行（与别的层风格一致）。**GBK 安全**（见文件头）。"""
     return ("自主活动层就绪 · 注入开关=" + ("关" if _off() else "开")
             + f" · 最多 {ITEMS_MAX} 段 / {TEXT_MAX} 字符"
-            + " · 窗口=她上次开口之后 · 只读+只注入（不调 LLM、不写库、不挂 MCP 门）")
+            + " · 常驻=每轮带最近 N 段 · 只读+只注入（不调 LLM、不写库、不挂 MCP 门）")

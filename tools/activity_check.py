@@ -11,8 +11,9 @@ r"""
 
   · **自己编了一件事**：注入文本如果经过模型润色，就可能写出他没做过的动作
     —— 这直接踩「不许编造经历」。所以本层**一次 LLM 都不许调**（源码扫描验）。
-  · **把窗口搞成"永远重复"**：没有窗口/水位线 → 同一件事每次说话都喂一遍，
-    记忆变复读。窗口规则（她上次开口之后 → 这次开口之前）是纯 SQL，可被钉死。
+  · **常驻会不会变复读**：每轮都带最近 N 段，理论上会重复 —— 这是 2026-09-30
+    从"窗口"改成"常驻"时主动接受的代价（过渡方案），靠"滚动 + N 上限 + 文案说清
+    这是你自己的经历"兜住，终态是行迹进 OB、聊天时自然浮现（不再靠注入）。
   · **伪造一个默认值**：`state`/`started` 形状不合法时**替它编一个**
     —— 这就是 ⑩-a 那个 `DEFAULT 'chat'` 伪造来源 bug 的翻版。
   · **注入把聊天搞挂**：撑爆 `MAX_SYSTEM_CHARS` → `normalize_request` 抛 `too_large`
@@ -36,16 +37,17 @@ r"""
      18-21 🔴 **不发明内容**（输出里每个动作词都来自输入）· footprint 的措辞 · 空输入 → ""
      22-24 inject_text：含 MARK · 超限截断 · 框架话 = "你自己做的，不是别人告诉你的"
 
-  B. 窗口（只读 SQL）
-     1-4   🔴 窗口 = `上一条她说的话 < id < 这一条她说的话`（两端都真验 + 升序）
-     5     只认 `kind='activity'`（user / reply / act 行不会被当活动）
-     6     没有上一条 → 不设下界
-     7     `__legacy__`（无 api_session）也认
-     8     超上限取**最近** N 段
-     9     非法形状的活动行被跳过（不进 items）
+  B. 常驻注入（recent = 最近 N 段）
+     1-2   🔴 recent 取最近 N 段、升序（**不要求**夹在她两句话之间）
+     3     只认 `kind='activity'`（act / reply 行不会被当活动）
+     4     超上限取**最近** N 段（滚动更新）
+     5     非法形状的活动行被跳过（不进 items）
+     6-7   🔴 resolve 不反查会话（任意 probe 都返回最近 N 段）；无 activity → no_activity
 
   C. 注入（真跑 apply）
-     1-3   no_messages / session_unknown / nothing_new —— 三种"不插"且**body 逐字节不变**
+     1     no_messages → 不插
+     2     🔴 不反查会话：probe 不在库里也照样注入（他只有一个）
+     3     库里没 activity → no_activity
      4     🔴 命中：插了一条 system，**非 system 部分逐字节相同**（只插不删）
      5     🔴 插在已有 system **之后**（人格 → 摘要 → 足迹）
      6     🔴 ⑧ 与 ⑪ 同时注入 → 顺序是 摘要 在 足迹 之前（从旧到新）
@@ -54,7 +56,7 @@ r"""
      9     🔴 会撑爆 system 上限 → 不插（"更好用"绝不能变成"说不了话"）
      10    body / messages 形状不对 → fail-open（不抛、不改）
      11    🔴 注入后的 body **真能被 `normalize_request` 吃下**（不是"看起来对"）
-     12    last_injection 记了会话与段数
+     12    last_injection 记了段数与字符数
      13    🔴 resolve() 是只读的：跑前跑后 `messages` 行数与指纹不变
 
   D. 红线 / 接线 / 前端契约
@@ -331,59 +333,54 @@ def group_a(A) -> None:
 # ══════════════════════════════════════════════════════════════════════════
 
 def group_b(A, tmp: str) -> None:
-    sect("B. 窗口（只读 SQL —— 她上次开口之后 → 这次开口之前）")
+    sect("B. 常驻注入（recent = 最近 N 段，不再按她开口切窗口）")
 
     relay = make_db(tmp, "win")
-    u1 = seed_user(relay, "第一次说话", "s1", "2026-09-21T09:00:00+08:00")
     a1 = seed_activity(relay, "上午 · 他待了 6 分钟", [{"at": "09:30", "text": "翻了翻新帖"}])
     a2 = seed_activity(relay, "下午 · 他待了 9 分钟",
                        [{"at": "14:33", "text": "去乌有乡走到河边"}],
                        footprint="河边的风比上次凉了")
-    u2 = seed_user(relay, "第二次说话", "s1", "2026-09-21T20:00:00+08:00")
+    # 🔴 关键：这里**没有**夹在她两句话之间 —— 常驻注入下不需要，
+    #    他的人生跟她的说话节奏无关（这正是旧窗口被推翻的原因）。
 
-    chk("B1 prev_in_id = 上一条她自己说的话",
-        A.prev_in_id(relay, "s1", u2) == u1, f"{A.prev_in_id(relay, 's1', u2)} vs {u1}")
-
-    got = A.load_window(relay, u1, u2)
-    chk("B2 🔴 窗口内 (after, before) 真取到两段",
+    got = A.recent(relay, 5)
+    chk("B1 🔴 recent 取到全部两段（不要求夹在她两句话之间）",
         [g["message_id"] for g in got] == [a1, a2], str([g["message_id"] for g in got]))
-    chk("B3 🔴 边界外的活动**取不到**（before 之上 / after 之下都不行）",
-        A.load_window(relay, u2, u2 + 1) == [] and A.load_window(relay, 0, u1) == [])
-    chk("B4 返回**升序**（拼文本要正的）",
+    chk("B2 返回**升序**（拼文本要正的）",
         [g["message_id"] for g in got] == sorted(g["message_id"] for g in got))
 
     # 只认 kind='activity'
     w(relay, "INSERT INTO messages (ts,direction,kind,text) VALUES ('x','out','act','动作 chip')")
     w(relay, "INSERT INTO messages (ts,direction,kind,text) VALUES ('x','out','reply','一条回复')")
-    got2 = A.load_window(relay, u1, 10 ** 9)
-    chk("B5 只认 kind='activity'（act / reply 行不会被当活动）",
+    got2 = A.recent(relay, 5)
+    chk("B3 只认 kind='activity'（act / reply 行不会被当活动）",
         all(g["message_id"] in (a1, a2) for g in got2), str([g["message_id"] for g in got2]))
 
-    chk("B6 没有上一条 → 不设下界（after=0）", A.prev_in_id(relay, "s1", u1) == 0)
-
-    relay3 = make_db(tmp, "legacy")
-    l1 = seed_user(relay3, "老主线的一条", "")
-    a3 = seed_activity(relay3, "老主线里的活动", [{"at": "10:00", "text": "翻了翻日程本"}])
-    l2 = seed_user(relay3, "老主线的第二条", "")
-    got3 = A.load_window(relay3, A.prev_in_id(relay3, "__legacy__", l2), l2)
-    chk("B7 `__legacy__`（无 api_session）也认",
-        [g["message_id"] for g in got3] == [a3], str(got3))
-
     relay4 = make_db(tmp, "many")
-    m1 = seed_user(relay4, "开口", "s1")
     ids = [seed_activity(relay4, f"第{i}次醒来", [{"at": "14:0%d" % i, "text": f"做了第{i}件事"}])
            for i in range(1, 6)]
-    m2 = seed_user(relay4, "再开口", "s1")
-    got4 = A.load_window(relay4, m1, m2)
-    chk(f"B8 超上限取**最近** {A.ITEMS_MAX} 段",
+    got4 = A.recent(relay4, A.ITEMS_MAX)
+    chk(f"B4 超上限取**最近** {A.ITEMS_MAX} 段（滚动更新）",
         [g["message_id"] for g in got4] == ids[-A.ITEMS_MAX:], str([g["message_id"] for g in got4]))
 
     # 坏形状的行被跳过
     w(relay4, "INSERT INTO messages (ts,direction,kind,text,meta) VALUES (?,?,?,?,?)",
       ("x", "out", "activity", "坏形状", json.dumps({"activity": {"actions": []}})))
-    got5 = A.load_window(relay4, m1, 10 ** 9)
-    chk("B9 非法形状的活动行被跳过（不进 items）",
+    got5 = A.recent(relay4, 10)
+    chk("B5 非法形状的活动行被跳过（不进 items）",
         all(g["message_id"] in ids for g in got5), str([g["message_id"] for g in got5]))
+
+    # resolve 不依赖会话 / 窗口：probe 只是"这轮是用户在说话"的门，不再反查
+    r_any = A.resolve(relay, "这句库里根本没有的话")
+    chk("B6 🔴 resolve 不反查会话：任意 probe 都返回最近 N 段（不再 session_unknown）",
+        bool(r_any.get("text")) and r_any.get("reason") == "",
+        f"reason={r_any.get('reason')} items={len(r_any.get('items'))}")
+
+    relay_none = make_db(tmp, "noact")
+    r_empty = A.resolve(relay_none, "xx")
+    chk("B7 无 activity → no_activity（不硬造、不编造）",
+        r_empty.get("text") == "" and r_empty.get("reason") == "no_activity",
+        f"reason={r_empty.get('reason')}")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -409,20 +406,18 @@ def group_c(A, tmp: str) -> None:
     r1 = A.apply(relay, b1)
     chk("C1 messages 为空 → 不插", r1.get("injected") is False and b1 == {"messages": []}, str(r1))
 
-    # 2 认不出会话 —— body 逐字节不变
+    # 2 不反查会话 —— probe 不在库里也照样注入（他只有一个，与哪句话无关）
     b2 = openai_body("一句库里没有的话")
-    before2 = json.dumps(b2, ensure_ascii=False, sort_keys=True)
     r2 = A.apply(relay, b2)
-    chk("C2 🔴 认不出会话 → session_unknown，body 逐字节不变",
-        r2.get("reason") == "session_unknown"
-        and json.dumps(b2, ensure_ascii=False, sort_keys=True) == before2, str(r2))
+    chk("C2 🔴 不反查会话：probe 不在库里也照样注入（旧逻辑会 session_unknown）",
+        r2.get("injected") is True, str(r2))
 
     # 3 窗口里没有活动
     relay_none = make_db(tmp, "noact")
     seed_user(relay_none, "只有对话", "s1")
     b3 = openai_body("只有对话")
     r3 = A.apply(relay_none, b3)
-    chk("C3 窗口里没活动 → nothing_new", r3.get("reason") == "nothing_new", str(r3))
+    chk("C3 库里没 activity → no_activity（不硬造）", r3.get("reason") == "no_activity", str(r3))
 
     # 4 命中 —— 只插不删
     b4 = openai_body("这次的话")
@@ -495,8 +490,8 @@ def group_c(A, tmp: str) -> None:
 
     # 12 诊断
     last = A.last_injection()
-    chk("C12 last_injection 记了会话与段数",
-        last.get("session_id") == "s1" and int(last.get("items") or 0) >= 1, str(last))
+    chk("C12 last_injection 记了段数与字符数（不再记会话——常驻注入不反查）",
+        int(last.get("items") or 0) >= 1 and int(last.get("chars") or 0) > 0, str(last))
 
     # 13 只读
     sig_before = body_sig(relay)
@@ -606,8 +601,8 @@ def group_d(A, tmp: str) -> None:
         r.status_code == 200 and j["would_inject"] is True and A.MARK in j["text"]
         and len(q(relay, "SELECT id FROM messages WHERE kind='activity'")) == 1, r.text[:200])
     r = c.post("/app/ext/activity/preview", headers=h, json={"probe": "不存在的一句话"})
-    chk("D16 /preview 认不出会话 → would_inject=false（不瞎猜）",
-        r.status_code == 200 and r.json()["would_inject"] is False, r.text[:160])
+    chk("D16 /preview 不反查会话：probe 不存在也回最近 N 段（常驻）",
+        r.status_code == 200 and r.json()["would_inject"] is True, r.text[:160])
     chk("D17 🔴 没有 PUT / DELETE 路由（405）",
         c.put("/app/ext/activity", headers=h).status_code in (404, 405)
         and c.delete("/app/ext/activity", headers=h).status_code in (404, 405))
