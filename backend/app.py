@@ -195,9 +195,15 @@ def history_for_session(session_id: str, since: int, limit: int) -> list:
                 (since, limit),
             ).fetchall()
         else:
+            # 🔴 行迹卡片（kind='activity'，P2 ⑪）是时间线级事件，不属于任何
+            #    api_session —— 他醒来做事时你正开着哪个会话（或根本没开网页）
+            #    都可能。前端 index.html 的 msgInActiveSession 第一行本就把
+            #    activity 放行（"每个会话视图都显示"），但这里若仍按会话严格
+            #    过滤，这张卡片会在真实会话里被滤没、只剩 __legacy__ 能看到，
+            #    正好把"我做了事你看得见"变成反的。故豁免 activity。
             rows = conn.execute(
                 "SELECT * FROM messages "
-                "WHERE id > ? AND json_extract(meta, '$.api_session') = ? "
+                "WHERE id > ? AND (json_extract(meta, '$.api_session') = ? OR kind = 'activity') "
                 "ORDER BY id ASC LIMIT ?",
                 (since, session_id, limit),
             ).fetchall()
