@@ -480,6 +480,13 @@ def install(relay, public_prefix: str = "/") -> None:
                         #    所以这里补一句留痕：等那条落库后打 `upstream_error`
                         #    （与 stop 的 `truncated` 共用同一台机器）。
                         #    只碰 `meta`，走三道守卫；任何异常都不许影响这条流。
+                        # 🆕 可诊断性（2026-10-01）：真实原因之前**只**活在发给身体
+                        #    的那条 error 帧里 —— 而身体的 `stream_chat` 对 error 帧
+                        #    视而不见 ⇒ 日志里只剩一句没头没尾的"上游中途断开"，
+                        #    是欠费、过载还是真断流，谁都答不上来（KaelLife 侧
+                        #    `_err_text` 同一天踩的同一个坑）。这里把真实原因打出来。
+                        print(f"[llm] 上游中途报错 · provider={p['id']} model={mdl} · "
+                              f"{type(val).__name__}: {val}")
                         if G9 is not None:
                             try:
                                 await G9.note_upstream_error(relay, g_sid)
