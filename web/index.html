@@ -978,6 +978,12 @@
     font-variant-numeric: tabular-nums;
     user-select: none;
   }
+  /* B 类（footprint）＝ 他给你留的话 —— 聊天语气，不加标签不包装（Kael 2026-10-02：
+     「就是我跟你说话，你不在而已」）。只用一条细线把它跟动作明细分开，不写「当时留的话」。 */
+  .activity-say{
+    border-left: 2px solid var(--hairline);
+    padding-left: 8px;
+  }
   .activity-foot{
     margin-top: 6px;
     color: var(--text-faint);
@@ -5620,7 +5626,7 @@ function fillActivityLines(m){
   const head = d.actions.slice(0, ACTIVITY_PREVIEW_LINES).map(activityLineHtml).join("");
   const more = [
     ...d.actions.slice(ACTIVITY_PREVIEW_LINES).map(activityLineHtml),
-    d.footprint ? `<div class="activity-line"><span>（当时留的话：${escapeHtml(d.footprint)}）</span></div>` : "",
+    d.footprint ? `<div class="activity-line activity-say"><span>${escapeHtml(d.footprint)}</span></div>` : "",
   ].filter(Boolean).join("");
   // 折叠态 + 展开态各占一层：展开时**不重排**已显示的那几行（视觉上是"接着往下长"）
   return { head, more, hidden };
