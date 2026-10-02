@@ -1,0 +1,35 @@
+L5b 验收 · 自唤醒留话走对话不走行迹页
+共 32 项 · 通过 32 · 失败 0
+
+[OK] A1 kind='reply'（渲染走普通聊天气泡那条管线）
+[OK] A2 direction='out'（是他说的，不是她说的）
+[OK] A3 原文一字不改（不加标签、不加前缀）
+[OK] A4 带上 api_session = 她当前那个会话
+[OK] A5 会话历史里有这条（前端那条路）
+[OK] A6 拉到的 from='ai' + 正文完整（渲染成他的气泡）
+[OK] A7 别的会话看不见它（归属明确，不是到处广播）
+[OK] B1 relay_rows 能捞到这条（kind=reply + api_session 齐了）
+[OK] B2 位置正确：它是她上一条之后的最新一条
+[OK] C1 不带 api_session → 她的会话里看不见
+[OK] C2 不带 api_session → 行照样落库（不是丢了，是归属不明）
+[OK] C3 不带 api_session → 红线 relay_rows 也读不到（他上下文里没有）
+[OK] D1 行迹卡片仍是 kind='activity'
+[OK] D2 行迹卡片**不带** api_session（时间线级，照旧）
+[OK] D3 行迹卡片仍能被她当前会话历史捞到（豁免仍在）
+[OK] D4 行迹卡片不再有 footprint（L5 不再写它）
+[OK] D5 她自己的消息不受影响（回归）
+[OK] E1 _say_to_house 发的是 type=reply
+[OK] E2 会话取自 state['house_session']（不是硬编一个）
+[OK] E3 会话是在 _pull_house_chat 里从她的话里读到的
+[OK] E4 取不到时不硬编：留空并打一行日志
+[OK] E5 行迹函数体不再写 footprint（留话不再包装进行迹页）
+[OK] E6 两个出口是两次独立调用（L5 与 L5b）
+[OK] E7 L5b 在 _pull_house_chat 之后被调（会话已经读到了才发话）
+[OK] E8 兜底：增量里没有她的话时补扫一次（第一次部署/她这几轮没开口）
+[OK] E9 归属会话跨天保留（丢了 → 第二天第一条留话落到 __legacy__）
+[OK] F 红线目录 backend/ 工作区零改动
+[OK] F 红线目录 examples/ 工作区零改动
+[OK] F 红线目录 channel/ 工作区零改动
+[OK] G1 双推送这个副作用写在 _say_to_house 的 docstring 里（可查）
+[OK] G2 副作用里指明了修法（房子 push 那一跳 + silent 闸）
+[OK] G3 前端注释写清了 wake 留话为什么不走 activity 豁免（可诊断）

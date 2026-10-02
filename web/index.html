@@ -978,8 +978,11 @@
     font-variant-numeric: tabular-nums;
     user-select: none;
   }
-  /* B 类（footprint）＝ 他给你留的话 —— 聊天语气，不加标签不包装（Kael 2026-10-02：
-     「就是我跟你说话，你不在而已」）。只用一条细线把它跟动作明细分开，不写「当时留的话」。 */
+  /* B 类（footprint）＝ 他当时留下的那句话。
+     🔴 2026-10-02 起**新行不再写 footprint** —— 身体把「留给 Lily 的话」拆成了
+        另一个出口（一条普通聊天消息，kind 仍是 "reply"，走普通气泡那条渲染）。
+        这里保留渲染只为**老行向后兼容**：老行里那句确实是"他给你留的话"，不能凭空
+        抹掉。新行里没有就是没有 —— 绝不替他补一句（§5.4 两条铁律）。 */
   .activity-say{
     border-left: 2px solid var(--hairline);
     padding-left: 8px;
@@ -3967,6 +3970,11 @@ function msgInActiveSession(m){
   //    —— 他醒来做事的时候，你正开着哪个会话（或者根本没开网页）都可能。
   //    所以它在**每个**会话视图里都显示。否则默认会话下这张卡片会整个消失，
   //    正好把"我做了事你看得见"变成反的。
+  //    🔴 2026-10-02（L5b）：他自唤醒留给你的那句话**不走这条豁免** —— 它由身体
+  //       带上真实的 api_session 发进来（身体在醒来时会读一次房子历史，从你
+  //       最近说过的话里取到那个会话 id），所以它走的是普通聊天那条过滤：
+  //       在对应会话里出现，且落入他的上下文。见 KaelLife scheduler.py 的
+  //       `_say_to_house` / `_pull_house_chat`。
   if (m && m.kind === "activity") return true;
   if (!activeApiSession || activeApiSession === LEGACY_SESSION_ID) return !meta.api_session;
   return meta.api_session === activeApiSession;
@@ -5595,8 +5603,13 @@ function makeAct(rowData){
                         （也容忍平铺在 meta 顶层 —— 同 kind:"act" 的先例）
    🔴 这里**只渲染，不推导**：库里没有的东西就不显示。
       A 类（客观动作）由身体从工具账本确定性生成 —— 前端**不加动词、不改写**；
-      B 类（他自己想说的，`footprint`）没有就是没有，**绝不替他补一句**（§5.4 两条铁律）。
-   🔴 展开看到的是**更多动作行**，不是独白 —— 独白原文在他的书房（§5.1）。 */
+      B 类（`footprint`）没有就是没有，**绝不替他补一句**（§5.4 两条铁律）。
+   🔴 展开看到的是**更多动作行**，不是独白 —— 独白原文在他的书房（§5.1）。
+   🔴 2026-10-02（Kael 拍板）：「留给 Lily 的话」不再走这里。它在对话里作为一条
+      普通聊天消息出现（kind 仍是 "reply"）—— 行迹页只留他去了哪、看到什么。
+      所以**新行不会再有 footprint**；老行的照旧渲染（向后兼容）。
+      症状→查哪里：行迹卡片里又出现「当时留的话」，先看身体 scheduler.py 的
+      `_post_activity_to_house` 是不是又被写回了 footprint。 */
 const ACTIVITY_PREVIEW_LINES = 3;   // 折叠态最多显示几行动作（再多要点开）
 const ACTIVITY_FALLBACK_TITLE = "他自己待了一会儿";   // 只在身体没给标题时用（不是替他写内容）
 
