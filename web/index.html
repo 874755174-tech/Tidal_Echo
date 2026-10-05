@@ -1013,6 +1013,8 @@
     width: min(100vw, var(--ref-width));
     margin: 0 auto;
     display:flex; align-items:center; gap: clamp(6px, 1vw, 12px);
+    /* 🔴 附件待发托盘要独占一行（以前这里只有横排，插进来会被挤扁） */
+    flex-wrap: wrap;
     background: transparent; border:none;
     padding: 0 var(--side-pad) clamp(10px, 1.6vw, 18px);
     padding-bottom: calc(clamp(10px, 1.6vw, 18px) + env(safe-area-inset-bottom));
@@ -1025,6 +1027,43 @@
     border: none; background: transparent;
     color: var(--accent); display:grid; place-items:center; cursor:pointer; padding:0;
     transition: transform .15s ease, color .2s ease;
+  }
+
+  /* ── 附件待发托盘（2026-10-05）───────────────────────────────────
+     选好图先落这里，跟你写的字一起发。图是配图，不该自己蹦出去。 */
+  .att-tray{
+    flex: 1 0 100%;                 /* 独占一行，不挤 .field */
+    display:flex; align-items:center; gap: 8px;
+    padding: 2px 2px 8px;
+    overflow-x: auto; overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .att-tray::-webkit-scrollbar{ display:none; }
+  .att-chip{
+    position:relative; flex:none;
+    width: clamp(52px, 12vw, 64px); height: clamp(52px, 12vw, 64px);
+    border-radius: 12px; overflow:hidden;
+    background: var(--field-bg);
+    box-shadow: var(--shadow);
+    display:grid; place-items:center;
+  }
+  .att-chip img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .att-chip .att-chip-ic{ color: var(--text-faint, #888); }
+  .att-chip.is-busy{ opacity:.55; }
+  .att-chip.is-failed{ outline: 2px solid var(--danger, #c0392b); }
+  .att-chip-x{
+    position:absolute; top:2px; right:2px;
+    width:20px; height:20px; border-radius:50%;
+    border:none; cursor:pointer; padding:0;
+    background: rgba(20,20,25,.62); color:#fff;
+    display:grid; place-items:center; line-height:1;
+  }
+  .att-chip-x svg{ width:11px; height:11px; }
+  .att-tray-hint{
+    flex:none; font-size:12px; line-height:1.4;
+    color: var(--text-faint, #888);
+    padding-left: 2px;
   }
   .floatbtn:active{ transform: scale(.9); color: var(--text); }
   .floatbtn:hover{ color: var(--text); }
@@ -2136,6 +2175,9 @@
     </div>
   </main>
   <footer class="composer">
+    <!-- 🔴 2026-10-05：选好的附件先落在这里，**不自己发出去**。
+         以前选完图立刻 apiSend，害得她要抢时间打字。配图应该跟着话走。 -->
+    <div id="attTray" class="att-tray hidden" aria-live="polite"></div>
     <div class="field">
       <button class="floatbtn clip-in-field" id="clipBtn" aria-label="附件" title="附件">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5l-8.8 8.8a5 5 0 0 1-7.1-7.1l8.8-8.8a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.6 1.6 0 0 1-2.3-2.3l8-8"/></svg>
@@ -5716,6 +5758,17 @@ function makeMessage(rowData){
       removeMessage(m._key);
       inputEl.value = m.text;
       inputEl.dispatchEvent(new Event("input"));
+      // 🔴 2026-10-05：图和字现在是一条消息，以前重试只回填字 ⇒ 图丢了。
+      //    把这条的附件放回待发区，跟着字一起重发。
+      const atts = (m.meta && Array.isArray(m.meta.attachments)) ? m.meta.attachments : [];
+      atts.forEach((a) => {
+        if (!a || !a.name) return;
+        attDrafts.push({ id: "att-" + (++attSeq), blob: null, name: a.name, mime: a.mime || "",
+          kind: a.kind || "file", localUrl: a.localUrl || "", width: a.width || 0,
+          up: a.url ? { url: a.url, name: a.name, size: a.size, mime: a.mime, kind: a.kind } : null,
+          uploading: false, failed: !a.url });
+      });
+      if (atts.length) renderAttTray();
       doSend();
     });
   }else fillMeta(metaEl, m.ts, m.from === "human");
@@ -5971,6 +6024,7 @@ function scheduleRender({ stickToBottom = false, preserveAnchor = false, anchorO
 const PENDING_OUTGOING_TTL = 2 * 60e3;
 const pendingOutgoing = [];
 let optimisticSeq = 0;
+let attSeq = 0;                // 附件暂存区编号（2026-10-05 新增）
 
 function prunePendingOutgoing(){
   const cutoff = Date.now() - PENDING_OUTGOING_TTL;
@@ -6548,8 +6602,9 @@ inputEl.addEventListener("compositionend",   () => composing = false);
 inputEl.addEventListener("input", () => {
   inputEl.style.height = "auto";
   inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + "px";
-  sendBtn.classList.remove("hidden");
-  micBtn.classList.add("hidden");
+  // 🔴 委托给 syncSendAffordance：删空字后，若托盘里没图要把发送键收回去。
+  //   以前这里是无条件亮发送键，删完字就变成一个点不动的死按钮。
+  syncSendAffordance();
 });
 inputEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !composing){
@@ -6570,7 +6625,9 @@ function triggerSendPress(){
 
 async function doSend(){
   const text = inputEl.value.trim();
-  if (!text) return;
+  // 🔴 有图就允许空话发送（图是配图，但她可能只想丢一张过去）
+  const atts = await takeStagedAttachments();
+  if (!text && !atts.length) return;
   if (!(await ensureRealSession())) return;   // 🔴 止血：历史记录视图先落到真实会话再发
   triggerSendPress();            // 发送键:轻按回弹的小反馈
   ensureAudio();                 // 手势内解锁/预热音频
@@ -6582,7 +6639,9 @@ async function doSend(){
   const optimisticTs = Date.now();
   const tempKey = "pending-" + (++optimisticSeq);
   const currentSid = effectiveApiSession();
+  // 乐观气泡：图和字在**同一条**里，不拆成两条消息
   const optimisticMeta = currentSid ? { api_session: currentSid } : {};
+  if (atts.length) optimisticMeta.attachments = atts.map((a) => ({ ...a, uploading: !a.url }));
   const optimistic = { id: tempKey, ts: new Date(optimisticTs).toISOString(), from:"human", kind:"user", text, meta:optimisticMeta, status:"sending" };
   seen.add(tempKey);
   setMessage(optimistic, { render:false, cache:false });
@@ -6590,15 +6649,17 @@ async function doSend(){
   playSendSound();               // 发出反馈音
   rememberPendingOutgoing(tempKey, text, optimisticTs);
   scheduleRender({ stickToBottom:true });
+  syncSendAffordance();
 
   try{
-    const { id } = await apiSend(text);
+    const { id } = await apiSend(text, atts);
     const key = msgKey(id);
     confirmOptimistic(tempKey, key);
     dropPendingOutgoing(tempKey);
   }catch(err){
     dropPendingOutgoing(tempKey);
     if (String(err.message) === "401") return;
+    if (String(err.message) === "413") showToast("文件太大（上限 10MB）");
     setMessage({ ...optimistic, status:"failed" });
   }
 }
@@ -6635,9 +6696,22 @@ function imageToJpeg(file){
     img.src = url;
   });
 }
-async function sendOneFile(file){
+/* ══════════════════════════════════════════════════════════════
+   附件待发区（2026-10-05）
+   🔴 改的是交互，不是修bug：以前选完图**立刻**发出去，她要抢时间打字，
+   于是图自己先蹦到 Kael 那边去了。图是配图 —— 该跟着她的话一起走。
+   现在的规矩：
+     · 选好图 → 落进托盘（缩略图 + × 可撤），**不发**
+     · 打字 / 先打字后选图，都一样
+     · 发送时：图随话一起发（一条消息，不拆成两条）
+     · 纯发图（一个字没打）也允许 —— 托盘有图时发送键就亮了
+   ══════════════════════════════════════════════════════════════ */
+const attTray = $("#attTray");
+const attDrafts = [];                // {id, blob, name, mime, kind, localUrl, w, h, uploading, failed}
+
+/** 往托盘里加一个文件（压缩 → 预览 → 后台先上传，不发消息） */
+async function stageOneFile(file){
   if (!secret) return;
-  ensureAudio();
   const image = isImageFile(file);
   let blob = file, name = file.name || (image ? "image" : "file"), mime = file.type || "";
   let imgW = 0, imgH = 0;
@@ -6649,39 +6723,107 @@ async function sendOneFile(file){
   }
   if (blob.size > ATT_MAX){ showToast("文件超过 10MB，发不了"); return; }
   const kind = image ? "image" : "file";
-  const localUrl = image ? URL.createObjectURL(blob) : "";
-  const optimisticTs = Date.now();
-  const tempKey = "pending-" + (++optimisticSeq);
-  const att0 = { url: "", localUrl: localUrl, name: name, size: blob.size, mime: mime, kind: kind, width: imgW, height: imgH, uploading: true };
-  const currentSid = effectiveApiSession();
-  const optimisticMeta = { attachments: [att0] };
-  if (currentSid) optimisticMeta.api_session = currentSid;
-  const optimistic = { id: tempKey, ts: new Date(optimisticTs).toISOString(), from: "human", kind: "user", text: "", meta: optimisticMeta, status: "sending" };
-  seen.add(tempKey);
-  setMessage(optimistic, { render: false, cache: false });
-  freshKeys.add(tempKey);
-  playSendSound();
-  scheduleRender({ stickToBottom: true });
+  const d = { id: "att-" + (++attSeq), blob, name, mime, kind,
+              localUrl: image ? URL.createObjectURL(blob) : "", width: imgW, height: imgH,
+              up: null, uploading: false, failed: false };
+  attDrafts.push(d);
+  renderAttTray();
+  focusInputWithoutPageScroll();
+
+  // 🔴 提前上传：这样她打完字点发送时不用干等。
+  //    失败**不拦**发送 —— 到时候照常把没传成的那个发过去，标成失败重试。
+  d.uploading = true; renderAttTray();
   try{
     const up = await apiUpload(blob, name, mime);
-    if (localUrl && up && up.url) localPreview.set(up.url, localUrl);
-    const finalAtt = { url: up.url, name: up.name, size: up.size, mime: up.mime, kind: up.kind, width: imgW, height: imgH };
-    rememberPendingOutgoing(tempKey, "", optimisticTs);
-    const { id } = await apiSend("", [finalAtt]);
-    const finalMeta = { attachments: [finalAtt] };
-    if (currentSid) finalMeta.api_session = currentSid;
-    confirmOptimistic(tempKey, msgKey(id), { id: id, ts: optimistic.ts, from: "human", kind: "user", text: "", meta: finalMeta, status: "sent" });
-    dropPendingOutgoing(tempKey);
+    d.up = up;
+    if (d.localUrl && up && up.url) localPreview.set(up.url, d.localUrl);
   }catch(err){
-    dropPendingOutgoing(tempKey);
     if (String(err.message) === "401") return;
-    if (String(err.message) === "413") showToast("文件太大（上限 10MB）");
-    setMessage({ ...optimistic, meta: { attachments: [{ ...att0, uploading: false, failed: true }] }, status: "failed" });
+    d.failed = true;
+  }finally{
+    d.uploading = false;
+    renderAttTray();
   }
 }
+
+function renderAttTray(){
+  if (!attTray) return;
+  attTray.innerHTML = "";
+  if (!attDrafts.length){ attTray.classList.add("hidden"); syncSendAffordance(); return; }
+  attTray.classList.remove("hidden");
+  attDrafts.forEach((d) => {
+    const chip = document.createElement("div");
+    chip.className = "att-chip"
+      + (d.uploading ? " is-busy" : "")
+      + ((d.failed && !d.up) ? " is-failed" : "");
+    if (d.localUrl){
+      const img = document.createElement("img");
+      img.src = d.localUrl; img.alt = d.name || "";
+      chip.appendChild(img);
+    }else{
+      const ic = document.createElement("span");
+      ic.className = "att-chip-ic";
+      ic.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
+      chip.appendChild(ic);
+    }
+    const x = document.createElement("button");
+    x.type = "button"; x.className = "att-chip-x"; x.setAttribute("aria-label", "去掉 " + (d.name || "附件"));
+    x.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+    x.addEventListener("click", () => {
+      const i = attDrafts.indexOf(d);
+      if (i >= 0) attDrafts.splice(i, 1);
+      renderAttTray();
+    });
+    chip.appendChild(x);
+    attTray.appendChild(chip);
+  });
+  const hint = document.createElement("span");
+  hint.className = "att-tray-hint";
+  const pending = attDrafts.filter((d) => d.uploading).length;
+  hint.textContent = pending ? "图在传…" : "配图 · 一起发";
+  attTray.appendChild(hint);
+  syncSendAffordance();
+}
+
+/** 有图或没图，决定发送键亮不亮 —— 纯发图也得能发出去。 */
+function syncSendAffordance(){
+  if (!sendBtn) return;
+  const hasText = !!(inputEl.value || "").trim();
+  const hasAtt = attDrafts.length > 0;
+  if (hasAtt){
+    sendBtn.classList.remove("hidden");
+    micBtn.classList.add("hidden");
+  }else if (!hasText){
+    sendBtn.classList.add("hidden");
+    micBtn.classList.remove("hidden");
+  }
+}
+
+/** 把暂存区交出去：{url,name,size,mime,kind,width}[]，并清空暂存区。 */
+async function takeStagedAttachments(){
+  const drafts = attDrafts.splice(0, 1);       // 只取一次
+  renderAttTray();
+  if (!drafts.length) return [];
+  await Promise.all(drafts.map((d) => (d.uploading ? d._ready || (d._ready = new Promise((r) => {
+    const t = setInterval(() => {
+      if (!d.uploading){ clearInterval(t); r(); }
+    }, 80);
+    setTimeout(() => { clearInterval(t); r(); }, 30000);
+  })) : Promise.resolve())));
+  return drafts.map((d) => {
+    if (d.up && d.up.url){
+      return { url: d.up.url, name: d.up.name || d.name, size: d.up.size || d.blob.size,
+               mime: d.up.mime || d.mime, kind: d.up.kind || d.kind, width: d.width || 0 };
+    }
+    // 没传成也得走 —— 后端会存下来，前端会显示"上传失败"可重试。
+    return { url: "", name: d.name, size: d.blob.size, mime: d.mime, kind: d.kind,
+             width: d.width || 0, failed: true };
+  });
+}
+
 async function handleFiles(list){
   const files = Array.from(list || []);
-  for (const f of files){ await sendOneFile(f); }
+  for (const f of files){ await stageOneFile(f); }
 }
 if (clipBtn && clipInput){
   clipBtn.addEventListener("click", () => clipInput.click());
