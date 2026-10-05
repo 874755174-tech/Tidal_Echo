@@ -139,6 +139,28 @@ async def _strip_public_prefix(request, call_next):
     return await call_next(request)
 
 
+# ── 页面壳禁缓存（2026-10-05）─────────────────────────────────────────────
+# 🔴 今天踩的真坑：改了前端、push、redeploy 都做了，她手机（重装 PWA）拿到新壳，
+#    但**电脑浏览器关掉重开还在跑旧 JS** —— 静态文件响应里只有 Etag/Last-Modified、
+#    没有 Cache-Control，浏览器对"没说能不能缓存"的资源会自作主张用本地副本，
+#    连导航都可能不回服务器问。结果她电脑上"选图即发"的旧逻辑一直活着。
+#    修法：给页面壳（HTML / sw.js / manifest）补 `Cache-Control: no-cache` ——
+#    含义是"允许存缓存，但每次用之前必须来服务器问一句有没有新版"；
+#    Etag 还在，没更新就是 304，不费流量。图片 / 字体等其他静态资源不动，照常缓存。
+#    （用 content-type 判 HTML 是为了不受 public_prefix 剥前缀的影响。）
+@relay.app.middleware("http")
+async def _no_cache_for_shell(request, call_next):
+    response = await call_next(request)
+    try:
+        ctype = (response.headers.get("content-type") or "").lower()
+        path = request.scope.get("path", "")
+        if ctype.startswith("text/html") or path.endswith("/sw.js") or path.endswith("/manifest.webmanifest"):
+            response.headers["Cache-Control"] = "no-cache"
+    except Exception:
+        pass    # 加头失败绝不能影响正常响应
+    return response
+
+
 if WEB_DIR.is_dir():
     # html=True → 目录请求返回 index.html（`/` 就是 PWA 入口）
     relay.app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="pwa")
