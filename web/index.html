@@ -1403,6 +1403,18 @@
   }
   .toast.show{ opacity:1; transform: translate(-50%, 0); }
 
+  /* 壳版本提示条（2026-10-05）：旧壳里发图会自己蹦出去，戳它刷新换新壳 */
+  .shell-bar{
+    position: fixed; top: calc(var(--header-h, 56px) + 8px); left:50%;
+    transform: translateX(-50%); z-index:400;
+    background: #c0392b; color:#fff; font-size:13px;
+    padding:9px 18px; border-radius:999px;
+    box-shadow: 0 10px 26px rgba(0,0,0,.22);
+    cursor:pointer; animation: shellBarIn .3s ease;
+  }
+  .shell-bar:active{ transform: translateX(-50%) scale(.96); }
+  @keyframes shellBarIn{ from{ opacity:0; transform: translateX(-50%) translateY(-8px); } to{ opacity:1; transform: translateX(-50%) translateY(0); } }
+
   @media (max-width: 520px){
     :root{
       --side-pad: 16px;
@@ -2576,6 +2588,12 @@ const CONFIG = {
   SINCE:      "2026/07/01",   // "together since" date YYYY/MM/DD for the menu counter ("" hides it) · Lily & Kael 认识日
 };
 const AI_NAME = CONFIG.AI_NAME, HUMAN_NAME = CONFIG.HUMAN_NAME, APP_NAME = CONFIG.APP_NAME;
+
+/* 壳版本号：跟 sw.js 的 VERSION 必须一致。
+   每次改 index.html 或 sw.js 都要 bump。前端拿它跟 SW 报上来的版本比，
+   对不上就说明「你手上是旧壳」→ 顶部弹一条"有新版本，戳一下刷新"。
+   🔴 2026-10-05：选图交互改了却不见效，就是忘了 bump 旧壳的坑。 */
+const SHELL_VERSION = "2026-10-05-attstage";
 
 const API_BASE = "/relay";       // same-origin; nginx mounts the relay here (RELAY_PUBLIC_PREFIX)
 const USE_MOCK  = false;          // true = self-contained demo with fake data (no backend needed)
@@ -7029,6 +7047,62 @@ if (window.visualViewport){
 if ("serviceWorker" in navigator){
   window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
 }
+
+/* ════════════ 壳版本体检（2026-10-05） ════════════
+   问你手上的 service worker「你是什么版本」，跟本页 SHELL_VERSION 比：
+   · 一致 → 没事
+   · 不一致 → 弹常驻提示条，让 Lily 戳一下刷新，别在旧壳里发图又自己蹦出去
+   为什么不自检本地代码：本地代码永远"看起来是对的"，错的是她手机里那份旧缓存。
+   iOS PWA 从后台唤回来不刷新，所以这条在 visibilitychange 也要再查一次。
+
+   注意一个边界：首次安装 / 普通浏览器里 SW 还没接管页面（controller 为 null），
+   那不代表"旧壳"——只是 SW 还没来得及 claim，不能误报。
+   旧壳的判定是：SW 存在、接管了页面、但版本号对不上。 */
+(function shellVersionGuard(){
+  const NO_SW = typeof navigator === "undefined" || !("serviceWorker" in navigator);
+
+  function askSW(){
+    return new Promise((resolve) => {
+      if (NO_SW) return resolve({ controlled:false });
+      navigator.serviceWorker.getRegistration().then((reg) => {
+        if (!reg || !navigator.serviceWorker.controller){ resolve({ controlled:false }); return; }
+        const mc = new MessageChannel();
+        let settled = false;
+        const done = (v) => { if (!settled){ settled = true; resolve(v); } try{ mc.port1.close(); }catch(_){} };
+        mc.port1.onmessage = (e) => {
+          done((e.data && e.data.type === "KAEL_SW_VERSION" && e.data.version)
+            ? { controlled:true, version:e.data.version }
+            : { controlled:true });
+        };
+        setTimeout(() => done({ controlled:true }), 1200);
+        navigator.serviceWorker.controller.postMessage({ type: "KAEL_SW_VERSION" }, [mc.port2]);
+      }).catch(() => resolve({ controlled:false }));
+    });
+  }
+
+  function showShellBar(){
+    if (document.getElementById("shellBar")) return;   // 已挂着不重复
+    const bar = document.createElement("div");
+    bar.id = "shellBar";
+    bar.className = "shell-bar";
+    const t = document.createElement("span");
+    t.textContent = "有新版本 · 戳这里刷新";
+    bar.appendChild(t);
+    bar.addEventListener("click", () => { try{ location.reload(); }catch(_){} });
+    document.body.appendChild(bar);
+  }
+
+  async function check(){
+    if (!secret) return;                       // 没登录不折腾
+    const r = await askSW();
+    if (!r.controlled) return;                 // SW 没接管 → 不是旧壳，别误报
+    if (r.version === SHELL_VERSION) return;   // 一致 → 好
+    showShellBar();                            // 接管了但版本旧 → 旧壳
+  }
+
+  window.addEventListener("load", () => setTimeout(check, 1500));
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") setTimeout(check, 800); });
+})();
 
 init();
 </script>
