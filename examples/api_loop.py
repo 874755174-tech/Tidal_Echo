@@ -51,6 +51,12 @@ load_dotenv(HERE / ".env")
 LOOP_PORT = int(os.environ.get("LOOP_PORT", "3020"))
 LOOP_CONFIG = Path(os.environ.get("LOOP_CONFIG", str(HERE / "api_loop.config.json")))
 RELAY_DB = os.environ.get("RELAY_DB", str(HERE.parent / "backend" / "relay.db"))
+#: 附件落盘目录 —— 必须与 `backend/app.py: UPLOAD_DIR` 同一个目录，否则读不到图。
+RELAY_UPLOADS = Path(
+    os.environ.get("RELAY_UPLOAD_DIR", str(HERE.parent / "backend" / "uploads"))
+)
+#: 单张图片进prompt 的上限（base64 之后）。太小会糊，太大会撑爆上下文/上游限额。
+MAX_IMAGE_B64 = int(os.environ.get("LLM_MAX_IMAGE_B64", "4_500_000"))
 RELAY_URL = os.environ.get("RELAY_URL", "http://127.0.0.1:3011").rstrip("/")
 RELAY_SECRET = os.environ.get("RELAY_SECRET", "")
 PERSONA_FILE = os.environ.get("PERSONA_FILE", "")
@@ -222,16 +228,139 @@ def relay_rows(before_id: int | None, session_id: str, limit: int) -> list[dict[
     return [dict(r) for r in reversed(rows)]
 
 
-def build_messages(text: str, *, before_id: int | None = None, session_id: str = "", use_context: bool = True) -> list[dict[str, str]]:
-    messages = [{"role": "system", "content": PERSONA}]
+def _atts_of(row: dict[str, Any]) -> list:
+    """从一行消息里取出附件列表。`meta` 可能是 dict 也可能是 JSON 字符串。"""
+    meta = row.get("meta")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            return []
+    if not isinstance(meta, dict):
+        return []
+    atts = meta.get("attachments")
+    return atts if isinstance(atts, list) else []
+
+
+def _is_image(att: dict) -> bool:
+    return (str(att.get("kind") or "") == "image"
+            or str(att.get("mime") or "").startswith("image/"))
+
+
+def _attachment_path(att: dict[str, Any]) -> Path | None:
+    """附件的公网 URL → 本地磁盘路径。只认 uploads 目录里的普通文件名。"""
+    url = str(att.get("url") or "")
+    if not url:
+        return None
+    name = url.rsplit("/", 1)[-1]
+    if not name or "/" in name or "\\" in name or name.startswith("."):
+        return None                       # 🔴 不做任何路径穿越
+    path = RELAY_UPLOADS / name
+    return path if path.is_file() else None
+
+
+def _images_from_attachments(atts: list) -> list[dict]:
+    """附件里的图片 → 上游认识的 image_url 块（历史与当前这条**共用**这一份）。
+
+    🔴 背景（2026-10-05 修）：PWA 早就支持发图，backend 也把附件存进了
+    `meta.attachments`，但**这一层以前只读 `text`** ⇒ 图存进了库、却从来没
+    递到模型眼前。他在 kaelhome 里回的是"你刚刚发了个东西但我这边看不到内容"。
+
+    **只认图片**。PDF/文档/音频**故意不递**：他没有任何工具（全项目搜不到
+    `tools` 定义），塞进去只会让他收到一个文件名却读不到内容 —— 那比说清楚
+    更糟。见 `_note_from_attachments`。
+    """
+    import base64
+
+    blocks: list[dict] = []
+    for att in [a for a in (atts or []) if isinstance(a, dict) and _is_image(a)][:3]:
+        name = str(att.get("name") or "这张图")
+        mime = str(att.get("mime") or "image/jpeg")
+        path = _attachment_path(att)
+        raw = None
+        if path is not None:
+            try:
+                raw = path.read_bytes()
+            except OSError:
+                raw = None
+        if raw is None:
+            blocks.append({"type": "text", "text": f"（{name}：图片没能取到。）"})
+            continue
+        b64 = base64.b64encode(raw).decode("ascii")
+        if len(b64) > MAX_IMAGE_B64:
+            blocks.append({"type": "text", "text": f"（{name}：太大了，没能带过来。）"})
+            continue
+        blocks.append({"type": "text", "text": f"（{name}）"})
+        blocks.append({"type": "image_url",
+                       "image_url": {"url": f"data:{mime};base64,{b64}"}})
+    return blocks
+
+
+def _note_from_attachments(atts: list) -> str:
+    """非图片附件的一句话说明 —— **明说他读不了**，不要静默。
+
+    他没有工具，PDF/文档递进去也只是一个文件名。这次事故的教训就在这里：
+    静默失败会让人误以为"他瞎"，而不是"这里没接"。
+    """
+    names = [str(a.get("name") or "").strip()
+             for a in (atts or [])
+             if isinstance(a, dict) and not _is_image(a)]
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    listed = "、".join(f"「{n}」" for n in names[:3])
+    more = f"（共 {len(names)} 个）" if len(names) > 3 else ""
+    return f"\n\n（她还发来了文件{more}：{listed}。我这边现在读不了文件内容 —— " \
+           f"只能看到文件名。你可以直接问我关于它的问题。）"
+
+
+def _row_images(row: dict[str, Any]) -> list[dict]:
+    """历史行里的图片块（薄封装，和当前那条共用同一份实现）。"""
+    return _images_from_attachments(_atts_of(row))
+
+
+def _row_attachment_note(row: dict[str, Any]) -> str:
+    """历史行里非图片附件的说明（薄封装）。"""
+    return _note_from_attachments(_atts_of(row))
+
+
+def build_messages(text: str, *, before_id: int | None = None, session_id: str = "",
+                   use_context: bool = True,
+                   attachments: list | None = None) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = [{"role": "system", "content": PERSONA}]
     if use_context:
         for row in relay_rows(before_id, session_id, history_n()):
             content = str(row.get("text") or "").strip()
-            if not content:
+            imgs = _row_images(row)                 # 🔴 以前这一段整个不存在
+            note = _row_attachment_note(row)
+            if not content and not imgs and not note:
                 continue
             role = "assistant" if row.get("direction") == "out" else "user"
-            messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": text})
+            # 🔴 只给 user 侧带图：assistant 历史是他自己的旧回复，本来就没图。
+            #    历史里的图也一起带上 —— 他"记得"自己看过什么，比只字片语强。
+            if role == "user" and imgs:
+                head = (content + note).strip()
+                # 空 text 块要去掉：OpenAI 兼容上游里 content:"" 有被拒的。
+                first: list[dict] = [{"type": "text", "text": head}] if head else []
+                messages.append({"role": role, "content": first + imgs})
+            else:
+                messages.append({"role": role, "content": (content or "（她发来一张图。）") + note})
+    # ---- 当前这条 ----------------------------------------------------
+    # 🔴 它**不在**历史里（relay_rows 用的是 `id < before_id`），所以它的附件
+    #    只能从 /loop/ingest 传进来的 attachments 拿。纯发图时 text 为空，
+    #    以前这里会拼出一条空 content —— 他收到的就是"你发了个东西但看不到"。
+    cur_imgs = _images_from_attachments(attachments or [])
+    cur_note = _note_from_attachments(attachments or [])
+    if not text and not cur_imgs and not cur_note:
+        text = "（她发了点东西，但这边没带过来。）"
+    if cur_imgs:
+        # 有图时不额外说"她发来一张图"——图块前面已经有文件名了，重复反而啰嗦。
+        # 🔴 空 text 块要去掉：OpenAI 兼容上游里content:"" 有被拒的。
+        head = (text + cur_note).strip()
+        first: list[dict] = [{"type": "text", "text": head}] if head else []
+        messages.append({"role": "user", "content": first + cur_imgs})
+    else:
+        messages.append({"role": "user", "content": text + cur_note})
     return messages
 
 
@@ -382,9 +511,11 @@ async def run_model(messages: list[dict[str, str]], *, stream_id: str = "", sess
     return {"text": "", "error": last_error or "all models failed", "tried": tried}
 
 
-async def handle_ingest(text: str, msg_id: int | None, session_id: str, *, dry: bool = False) -> dict[str, Any]:
+async def handle_ingest(text: str, msg_id: int | None, session_id: str, *, dry: bool = False,
+                        attachments: list | None = None) -> dict[str, Any]:
     stream_id = "api-" + uuid.uuid4().hex[:16]
-    messages = build_messages(text, before_id=msg_id, session_id=session_id, use_context=True)
+    messages = build_messages(text, before_id=msg_id, session_id=session_id, use_context=True,
+                              attachments=attachments or [])
     out = await run_model(messages, stream_id=stream_id, session_id=session_id, emit_stream=not dry)
     reply = (out.get("text") or "").strip()
     if not reply:
@@ -473,7 +604,11 @@ async def loop_chat(request: Request):
 async def loop_ingest(request: Request):
     body = await request.json()
     text = str(body.get("text") or body.get("message") or "").strip()
-    if not text:
+    # 🔴 2026-10-05：PWA 纯发图时 text 是空串（apiSend("", [att])）。
+    #    以前这一行直接 400 "empty text" ⇒ 纯发图那条**根本没进模型**。
+    attachments = body.get("attachments")
+    attachments = attachments if isinstance(attachments, list) else []
+    if not text and not attachments:
         raise HTTPException(status_code=400, detail="empty text")
     msg_id = body.get("id")
     try:
@@ -482,7 +617,8 @@ async def loop_ingest(request: Request):
         before_id = None
     session_id = str(body.get("session_id") or body.get("api_session") or active_session_id() or "").strip()
     dry = bool(body.get("dry"))
-    return await handle_ingest(text, before_id, session_id, dry=dry)
+    return await handle_ingest(text, before_id, session_id, dry=dry,
+                               attachments=attachments)
 
 
 if __name__ == "__main__":

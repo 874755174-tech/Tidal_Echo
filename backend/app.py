@@ -371,6 +371,12 @@ def _forward_to_loop_sync(msg: dict) -> None:
         "id": msg.get("id"),
         "text": msg.get("text", ""),
         "session_id": meta.get("api_session") or "",
+        # 🔴 2026-10-05：附件必须一起过去。
+        # api_loop 的 build_messages 用 `id < before_id` 取历史，**当前这条本身
+        # 被排除在外** ⇒ 只改 build_messages 的历史段，救不了"你现在发的那张图"。
+        # 而 PWA 纯发图时 text 是空串（apiSend("", [att])），不带附件过去就是
+        # 一条空消息 → /loop/ingest 直接 400 "empty text"。
+        "attachments": meta.get("attachments") or [],
     }, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         LOOP_INGEST_URL,

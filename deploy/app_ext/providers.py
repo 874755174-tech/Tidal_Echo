@@ -385,20 +385,61 @@ def validate_choice(settings: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def _flatten_content(v: Any) -> str:
-    """`content` 允许是字符串，也允许是 [{"type":"text","text":"..."}]（多模态形态）。"""
+    """`content` 允许是字符串，也允许是 [{"type":"text","text":"..."}]（多模态形态）。
+
+    🔴 只取文本，**不是**把整个 content 拍平。图片块（`image_url`）必须原样
+    留给 `_split_content` —— 这一行过去顺手把 `image_url` 整块丢掉了，而且
+    **不报错**（实测：进[文字+图片]，出纯文字，图片贡献 0 字符）。
+    那正是"丢一半上下文比报错危险得多"的活标本：网关自己在
+    `normalize_request` 里为 tools/n 之类立了"不认识就 400 绝不静默丢"的规矩，
+    偏偏图片这条走了另一个函数，破了它自己刚立的规。
+    """
+    return "".join(_split_content(v)[0])
+
+
+def _split_content(v: Any) -> tuple[list[str], list[dict]]:
+    """把 content 拆成 (文本片段, 图片块)。
+
+    图片块保持 OpenAI 的 `{"type":"image_url","image_url":{"url":...}}` 形状——
+    上游中转站认不认这个字段**必须先实测**，不能照协议想当然（见 memory）。
+    非图片的未知块：丢进文本（保持旧行为），但**不静默丢整条 content**。
+    """
     if v is None:
-        return ""
+        return [], []
     if isinstance(v, str):
-        return v
+        return ([v] if v else []), []
     if isinstance(v, list):
-        parts = []
+        texts: list[str] = []
+        images: list[dict] = []
         for item in v:
             if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-        return "".join(parts)
+                texts.append(item)
+            elif isinstance(item, dict):
+                kind = str(item.get("type") or "")
+                if kind == "image_url" and isinstance(item.get("image_url"), dict):
+                    url = str(item["image_url"].get("url") or "")
+                    if url:
+                        images.append({"type": "image_url", "image_url": {"url": url}})
+                        continue
+                if isinstance(item.get("text"), str):
+                    texts.append(item["text"])
+                    continue
+                texts.append(json.dumps(item, ensure_ascii=False))  # 不丢内容
+        return texts, images
     raise ProviderError("bad_content", f"content 类型不支持：{type(v).__name__}", 400)
+
+
+def _content_for_upstream(v: Any) -> Any:
+    """给上游的 content：只有一块纯文本时用字符串省 token，否则保持多模态结构。"""
+    texts, images = _split_content(v)
+    if not images:
+        return "".join(texts)
+    parts: list[dict] = []
+    for t in texts:
+        if t:
+            parts.append({"type": "text", "text": t})
+    parts.extend(images)
+    return parts or""
 
 
 def _num(params: dict, key: str, lo: float, hi: float) -> None:
@@ -479,17 +520,22 @@ def normalize_request(body: Any) -> dict:
         if not isinstance(m, dict):
             raise ProviderError("bad_request", f"messages[{i}] 不是对象", 400)
         role = str(m.get("role") or "").strip().lower()
-        text = _flatten_content(m.get("content"))
+        # 🔴 system 永远是纯文本（人格/摘要，图片放进去没意义）；
+        #    user/assistant 才可能带图，用 _content_for_upstream 保结构。
+        content = (_flatten_content(m.get("content")) if role == "system"
+                   else _content_for_upstream(m.get("content")))
         if role == "system":
-            system_parts.append(text)
+            system_parts.append(content)
         elif role in ("user", "assistant"):
-            msgs.append({"role": role, "content": text})
+            msgs.append({"role": role, "content": content})
         else:
             raise ProviderError(
                 "unsupported_role",
                 f"messages[{i}] 的 role={role!r} 不支持（只支持 system/user/assistant）", 400,
             )
-        total += len(text)
+        # 长度只按文本算 —— base64 图片动辄几十万字符，不能算进 MAX_TOTAL_CHARS
+        # （否则一张图就超限，且它本来就不是"文字太长"这个问题）。
+        total += len(content) if isinstance(content, str) else len(_flatten_content(content))
 
     if not msgs:
         raise ProviderError("bad_request", "至少要有一条 user / assistant 消息", 400)
