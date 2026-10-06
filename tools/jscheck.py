@@ -26,7 +26,26 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 WEB = HERE.parent / "web"
 
-NODE = Path(r"C:\Users\86187\.workbuddy\binaries\node\versions\22.22.2-3\node.exe")
+# 🔴 2026-10-06：托管 node 的版本目录从 `22.22.2-3` 变成了 `22.22.2-6`，
+#    这里原来写死 `-3` → 整套直接 FileNotFoundError（看起来像"页面有语法错"，
+#    其实是一个字符都没跑）。**教训与 sw.js 的 CACHE 同款：写死的路径会过期。**
+#    优先用 `current` 这个软链（托管 node 一直维护它），实在没有再按版本目录找。
+def _find_node() -> Path:
+    base = Path(r"C:\Users\86187\.workbuddy\binaries\node")
+    for cand in (base / "versions" / "current" / "node.exe",
+                 base / "workspace" / "node.exe"):
+        if cand.exists():
+            return cand
+    vdir = base / "versions"
+    if vdir.is_dir():                      # 兜底：挑版本号最大的那个
+        cands = sorted(vdir.glob("*/node.exe"))
+        if cands:
+            return cands[-1]
+    return Path(r"C:\Program Files\nodejs\node.exe")
+
+
+NODE = _find_node()
+
 
 
 def check_file(html_path: Path) -> tuple[int, int]:

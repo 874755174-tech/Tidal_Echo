@@ -2593,7 +2593,7 @@ const AI_NAME = CONFIG.AI_NAME, HUMAN_NAME = CONFIG.HUMAN_NAME, APP_NAME = CONFI
    每次改 index.html 或 sw.js 都要 bump。前端拿它跟 SW 报上来的版本比，
    对不上就说明「你手上是旧壳」→ 顶部弹一条"有新版本，戳一下刷新"。
    🔴 2026-10-05：选图交互改了却不见效，就是忘了 bump 旧壳的坑。 */
-const SHELL_VERSION = "2026-10-05-attstage";
+const SHELL_VERSION = "2026-10-06-tides";   // 🔴 必须与 sw.js 的 VERSION 完全一致（改前端必改两处）
 
 const API_BASE = "/relay";       // same-origin; nginx mounts the relay here (RELAY_PUBLIC_PREFIX)
 const USE_MOCK  = false;          // true = self-contained demo with fake data (no backend needed)
@@ -2819,6 +2819,7 @@ if (menuPanel){
     if (!item) return;
     if (item.dataset.menu === "chat") closeMenu();       // back to chat
     else if (item.dataset.menu === "album") location.assign("album.html");  // album shell (wire your own backend)
+    else if (item.dataset.menu === "tides") location.assign("tides.html");   // 行迹：一条时间流（只读 activity）
     else if (item.dataset.menu === "workshop") location.assign("workshop.html");  // 他的工作间
     else if (item.dataset.menu === "archive") location.assign("archive.html");  // 导出 / 快照（只取出，不导入）
     else showToast("即将开放");                           // placeholder items

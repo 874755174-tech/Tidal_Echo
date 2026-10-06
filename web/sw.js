@@ -5,14 +5,18 @@
    🔴 2026-10-05 · 这个坑真的踩了：改了选图交互、push 上去了，但她手机上还是"选图即发"。
    根因就是 CACHE 停在 v8 没换 —— 老客户端 precache 里的旧 index.html 一直活着，
    而 navigate 走 network-first 只在**刷新**时才换新壳；iOS PWA 从后台唤回来根本不刷新。
-   ⇒ 以后改 web/index.html 必须同时换这一行。检查：线上 sw.js 的 CACHE 名对不对。 */
-const CACHE = "kael-home-v9-attstage";
+   ⇒ 以后改 web/index.html 必须同时换这一行。检查：线上 sw.js 的 CACHE 名对不对。
+   ⚠️ 同理：`PRECACHE` 里加页面（2026-10-06 加 tides.html）也归这一行管 ——
+      独立页没进 precache 时走的是下面 fetch 分支的"先缓存后网络"，
+      她**第二次**打开就会拿到第一次缓存下来的旧壳（老壳缓存的第二个坑）。 */
+const CACHE = "kael-home-v10-tides";
 /* 壳版本号：跟 index.html 里的 SHELL_VERSION 必须一致。
    前端拿它跟 SW 的 VERSION 比，对不上就说明「你手上是旧壳」，当场提示刷新。 */
-const VERSION = "2026-10-05-attstage";
+const VERSION = "2026-10-06-tides";
 const AI_NAME = "Claude";          // push-title fallback; keep in sync with index.html CONFIG.AI_NAME
 const PRECACHE = [
   "./index.html",
+  "./tides.html",                  // 行迹页：独立页，不 precache 就会吃到旧壳
   "./chat-light.webp", "./chat-harbor.webp",
   "./menu-light.webp", "./menu-harbor.webp",
   "./avatar-sea.png",

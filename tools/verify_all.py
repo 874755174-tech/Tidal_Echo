@@ -48,7 +48,12 @@
                                     fail-open（**「不知道」≠「确定不在场」**：fail 分支里
                                     不许出现 `active_recent`）/ 非法 ts 绝不编默认值
                                    ⚠️ 它**不起端口、不连外网、不占端口**（进程内 ASGI）
- 19. git diff -- backend/ examples/ channel/  （红线，必须为空）
+ 19. tools/tides_check.py           第二层「行迹 Tides」页（游标翻页 / **不重不漏** /
+                                    **翻页期间新增不丢** / limit 有盖 / 坏游标降级成首页 /
+                                    老端点返回值**逐字节不变** / 🔴 不催债（反向断言）
+                                    / 🔴 不发明内容 / 老壳缓存坑）
+                                   ⚠️ 它**不起端口、不连外网、不占端口**（进程内 ASGI）
+ 20. git diff -- backend/ examples/ channel/  （红线，必须为空）
 
 ⚠️ 跑之前先确认 **8080 端口是空的** —— `tools/secaudit.py` 写死用它起测试服务，
    被占（比如那个 `kael-probe` 模型探测器还开着）会让 1/13 整套红，
@@ -84,50 +89,73 @@ PY = os.path.join(ROOT, ".venv", "Scripts", "python.exe")
 
 # jsdom 装在 WorkBuddy 托管 Node 的隔离 workspace 里（不污染用户环境），
 # 那两个前端验收脚本用绝对路径 import 它 —— 这里把同样的路径传下去。
-NODE = r"C:\Users\86187\.workbuddy\binaries\node\versions\22.22.2-3\node.exe"
+# 🔴 不要写死版本号目录：托管 Node 升过版（22.22.2-3 → 22.22.2-6），
+#    写死的路径会突然不存在，于是两套 jsdom 验收被"环境缺依赖"静默跳过 ——
+#    看起来像"没套件"，其实是**测试悄悄不跑了**。跟 jscheck.py 同款教训。
 NODE_MODULES = r"C:\Users\86187\.workbuddy\binaries\node\workspace\node_modules"
+
+
+def _find_node() -> str:
+    """按 jscheck.py 同一套顺序找 node.exe；实在找不到退回 PATH 上的 node。"""
+    import glob
+    base = r"C:\Users\86187\.workbuddy\binaries\node\versions"
+    for p in (os.path.join(base, "current", "node.exe"),
+              r"C:\Users\86187\.workbuddy\binaries\node\workspace\node.exe"):
+        if os.path.exists(p):
+            return p
+    cands = sorted(glob.glob(os.path.join(base, "*", "node.exe")))
+    if cands:
+        return cands[-1]
+    return "node"
+
+
+NODE = _find_node()
 
 # (标签, [可执行文件, 脚本], 额外 env)
 SUITES = [
-    ("1/18  访问控制体检", [PY, "secaudit.py"], {}),
-    ("2/18  会话数据层 + 兜底", [PY, "sessioncheck.py"], {}),
-    ("3/18  兜底四场景 + 鉴权红线", [PY, "sessionfallback_check.py"], {}),
-    ("4/18  P0 地基：五张表 + 身份层", [PY, "app_ext_check.py"], {}),
-    ("5/18  P1 模型网关：允许列表 + 三格式 + 真 HTTP + 参数下发 + 原始帧诊断 + CoT 透传", [PY, "providers_check.py"], {}),
-    ("6/18  web/ 各页面内联 JS 语法", [PY, "jscheck.py"], {}),
-    ("7/18  设置页模型/参数前端（jsdom 真跑）", [NODE, "model_ui_check.mjs"],
+    ("1/19  访问控制体检", [PY, "secaudit.py"], {}),
+    ("2/19  会话数据层 + 兜底", [PY, "sessioncheck.py"], {}),
+    ("3/19  兜底四场景 + 鉴权红线", [PY, "sessionfallback_check.py"], {}),
+    ("4/19  P0 地基：五张表 + 身份层", [PY, "app_ext_check.py"], {}),
+    ("5/19  P1 模型网关：允许列表 + 三格式 + 真 HTTP + 参数下发 + 原始帧诊断 + CoT 透传", [PY, "providers_check.py"], {}),
+    ("6/19  web/ 各页面内联 JS 语法", [PY, "jscheck.py"], {}),
+    ("7/19  设置页模型/参数前端（jsdom 真跑）", [NODE, "model_ui_check.mjs"],
      {"NODE_PATH": NODE_MODULES}),
-    ("8/18  会话归档/删除/改名前端（jsdom 真跑）", [NODE, "session_ui_check.mjs"],
+    ("8/19  会话归档/删除/改名前端（jsdom 真跑）", [NODE, "session_ui_check.mjs"],
      {"NODE_PATH": NODE_MODULES}),
-    ("9/18  房间层：工作间 + MCP 门", [PY, "workshop_check.py"],
+    ("9/19  房间层：工作间 + MCP 门", [PY, "workshop_check.py"],
      {"RELAY_WORKSHOP_DIR": ""}),
-    ("10/18 P2-0 导出 / 快照：一致快照 + 只读 + 密钥不进 URL", [PY, "archive_check.py"], {}),
-    ("11/18 P2 ⑧ 上下文管理：注入 / 摘要 / 迁移（从出口倒着验）", [PY, "context_check.py"], {}),
-    ("12/18 P2 ⑨ 停止/重答/多版本（假身体 + 慢上游，专照「偷偷换模型重跑」）",
+    ("10/19 P2-0 导出 / 快照：一致快照 + 只读 + 密钥不进 URL", [PY, "archive_check.py"], {}),
+    ("11/19 P2 ⑧ 上下文管理：注入 / 摘要 / 迁移（从出口倒着验）", [PY, "context_check.py"], {}),
+    ("12/19 P2 ⑨ 停止/重答/多版本（假身体 + 慢上游，专照「偷偷换模型重跑」）",
      [PY, "generate_check.py"], {}),
-    ("13/18 P2 ⑩-a 记忆层：source 缝 + 迁移 v3→最新 + 写入路径（进程内 ASGI，不占端口）",
+    ("13/19 P2 ⑩-a 记忆层：source 缝 + 迁移 v3→最新 + 写入路径（进程内 ASGI，不占端口）",
      [PY, "memory_check.py"], {}),
-    ("14/18 P2 ⑪ 自主活动带回上下文：窗口 + 确定性拼接 + 只插不删（不起端口、不连外网）",
+    ("14/19 P2 ⑪ 自主活动带回上下文：窗口 + 确定性拼接 + 只插不删（不起端口、不连外网）",
      [PY, "activity_check.py"], {}),
-    ("14b/18 L5b 自唤醒留话：走对话不走行迹页（type=reply + 带上她当前会话"
+    ("14b/19 L5b 自唤醒留话：走对话不走行迹页（type=reply + 带上她当前会话"
      " + 反向验证「不带就看不见」+ 红线目录零改动）（临时 relay + temp DB）",
      [PY, "wake_say_check.py"], {}),
-    ("15/18 P2 usage 记账：四家归一 + 命中率口径 + 缺口留痕 + 无写入口"
+    ("15/19 P2 usage 记账：四家归一 + 命中率口径 + 缺口留痕 + 无写入口"
      "（不起端口、不连外网）",
      [PY, "usage_check.py"], {}),
-    ("16/18 P2 ⑩-b 蒸馏管道：编造的 source_msg 必须被丢 + 水位线只在该推进时推进"
+    ("16/19 P2 ⑩-b 蒸馏管道：编造的 source_msg 必须被丢 + 水位线只在该推进时推进"
      " + redo 走软作废（不删行）"
      "（假上游**可编程**；房子不起端口，假上游占 8830）",
      [PY, "distill_check.py"], {}),
-    ("17/18 P3 通车预演：身体的真实调用形状 + response_format 不再静默丢"
+    ("17/19 P3 通车预演：身体的真实调用形状 + response_format 不再静默丢"
      " + 工具协议字段显式 400 + 注入与参数层共存"
      "（房子占 8814、假上游占 8815）",
      [PY, "llm_route_check.py"], {}),
-    ("18/18 P3 前置 ⑬ 在场信号：in 才算开口（out 不算）/ 语音通话也算 / 按 id 不按 ts"
+    ("18/19 P3 前置 ⑬ 在场信号：in 才算开口（out 不算）/ 语音通话也算 / 按 id 不按 ts"
      " / 窗口对齐 LILY_ACTIVE_WINDOW_MIN / 只读（源码扫描 + 行不变）"
      " / fail-open（未知 != 确定不在场）/ 非法 ts 绝不编默认值"
      "（不起端口、不连外网、不占端口）",
      [PY, "presence_check.py"], {}),
+    ("19/19 第二层「行迹 Tides」页：游标翻页不重不漏 / 期间新增不丢 / limit 有盖 /"
+     " 坏游标降级 / 老端点返回值逐字节不变 / 不催债 / 不发明内容"
+     "（不起端口、不连外网、不占端口）",
+     [PY, "tides_check.py"], {}),
 ]
 
 fails = []
@@ -137,9 +165,14 @@ for label, args, extra_env in SUITES:
     print(label)
     print("=" * 78)
     exe = args[0]
-    if exe == NODE and not os.path.exists(NODE):
-        # 环境缺 node 时**响亮地跳过**，既不要假装通过、也不要假装失败
-        print(f"[跳过] 没找到 node（{NODE}）")
+    if exe == NODE and NODE not in os.environ.get("PATH", "").split(os.pathsep) \
+            and not os.path.exists(NODE):
+        # 环境缺 node 时**响亮地跳过**，既不要假装通过、也不要假装失败。
+        # 🔴 条件要连 PATH 兜底一起判：`_find_node()` 找不到磁盘路径时会返回裸
+        #    "node"（让 Windows 自己在 PATH 里找）。只判 os.path.exists("node")
+        #    永远是 False ⇒ 明明 PATH 上有 node 也会被误报成"环境缺依赖"，
+        #    两套前端验收又静默不跑了 —— 这跟版本号写死是同一个病：**静默跳过**。
+        print(f"[跳过] 没找到可用的 node（磁盘上没有，PATH 里也没找到）")
         skipped.append(label)
         continue
     env = dict(os.environ)

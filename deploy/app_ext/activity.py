@@ -90,8 +90,23 @@ Lily 2026-09-21 原话（这是本层存在的理由）：
 ## 端点（全部只读）
 
     GET  /app/ext/activity           最近几段（`?limit=`）—— 已归一化
+                                     🆕 `&before=<id>` = 往回翻一页（**游标**，不是偏移量）
+    GET  /app/ext/activity/tides     🆕 行迹页**首页**（语义明确：永远是"最近一页"）
     GET  /app/ext/activity/status    开关 / 最近一次注入 / 计数
     POST /app/ext/activity/preview   给一个 OpenAI 风格 body → **只算不插**，看会带回去什么
+
+### 🆕 为什么翻页用「游标」而不是 `?offset=`（2026-10-06 · Tides 行迹页）
+
+`load_window(relay, after_id, before_id, limit)` **本来就是窗口语义**（`_SELECT` 里有
+`id > ? AND id < ?`）—— 注入侧一直在用，只是没往外露。所以 `before` 只是把已有的上界
+参数接到端点上，不是新机制。
+
+**为什么不用 `offset`**：他每醒一次就多一行 activity，`OFFSET 20` 的意思是
+"从我这条线往下数 20 行"—— 她往下翻一次，中间他就醒了一次，于是**同一段会被跳过**。
+游标记的是"我看到第几条了"，翻页期间新增的行**留在上面那页**，不会从她眼皮底下溜走。
+
+🔴 **游标不推进就是到底了**：返回条数 < `limit` ⇒ 没有更早的了。
+前端据此收手，**并且不显示"还剩多少条"** —— 那是差值、那是债（红线六）。
 
 挂载：`app_ext/__init__.py` 第 ⑪ 步；逃生开关 `APP_EXT_ACTIVITY_DISABLED=1`
 （关掉 = 不注入、端点不挂；**卡片照常显示** —— 卡片是原版链路，不归本层管）。
@@ -363,6 +378,81 @@ def recent(relay, limit: int = 20) -> list:
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# ②-b 翻页游标（Tides 行迹页 · 2026-10-06）—— 纯逻辑，可离线单测
+# ══════════════════════════════════════════════════════════════════════════
+
+#: 单页上限。**有盖**是故意的：这是"给人看的一览"，不是"把整库倒出来"。
+#:    真要全量，验收器 / 排查走 `counts()` 与 SQL，不走这个端点。
+PAGE_MAX = max(1, int(os.environ.get("ACTIVITY_PAGE_MAX", "200") or 200))
+
+
+def norm_cursor(v) -> int:
+    """游标归一化。**只接受正整数 id**，其余一律当"没有游标"（= 从最新开始）。
+
+    🔴 为什么这么严：`before` 直接进 SQL 上界，一个负数/乱码会让 `_rows` 的
+       `id < ?` 语义变得莫名其妙（负数 → 空结果；非数字 → 抛异常）。而"翻页失败"
+       最难受的形态是**静默给一个空页**（她会以为是没行迹了）。
+       ⇒ 这里宁可把坏游标**降级成"从头开始"**，也不让它变成一个假空页。
+    """
+    s = _s(v)
+    if not s or not s.isdigit():
+        return 0
+    try:
+        n = int(s)
+    except Exception:
+        return 0
+    # `isdigit()` 已经挡掉负号与小数，这里 return n 就够了（不多加一道 n>0：
+    #   突变测试证明它跟 isdigit() 完全等价 —— 加着只是让人以为"这里有第二道保险"，
+    #   其实是重复。真要第二道承重的墙，在 `page()` 里那道负数夹。）
+    return n
+
+
+def page_limit(v, default: int = 40) -> int:
+    """单页条数：`?limit=` → 夹到 `1..PAGE_MAX`。坏值 → 默认值（不是 20，也不是 0）。"""
+    s = _s(v)
+    n = default
+    if s and s.lstrip("-").isdigit():
+        try:
+            n = int(s)
+        except Exception:
+            n = default
+    return max(1, min(PAGE_MAX, n))
+
+
+def page(relay, before: int = 0, limit: int = 40) -> dict:
+    """Tides 行迹页的一页。**只读**（走 `load_window`，它只 SELECT）。
+
+    返回 `{items, next_before, has_more}`：
+      · `items`      —— 按时间**升序**（旧的在前，翻页往下长）
+      · `next_before`—— 下一页的游标 = 本页最小 `message_id`；**没有下一页时为 0**
+      · `has_more`   —— 还有更早的（`next_before != 0`）
+    🔴 **第一页是"最近 N 段"但仍按升序返回** —— 前端把它整体倒过来当最新在上，
+       往后翻的新页直接接在下面（不倒）。倒一次就够，倒两次会让人以为时间倒流。
+    """
+    before = int(before or 0)
+    # 🔴 纵深防御：`page()` 是公开入口，不许假设"上游一定已经 norm_cursor 过了"。
+    #    负上界会让 `id < -50` 变成空结果 —— 她看到的是"没有更早的了"，
+    #    而其实有：那是最难查的一种假（不报错、不 500、只是静静地骗她）。
+    if before < 0:
+        before = 0
+    limit = max(1, min(PAGE_MAX, int(limit or 40)))
+    # 🔴 多取一段来判断"还有没有更早的"，多取的那段**不返回**
+    #    （否则最后一页会露出重复行 —— 前端一去重就把游标语义搞脏了）。
+    #
+    # 🔴🔴 注意截断方向：`load_window` 返回的是**升序**（旧的在前），
+    #    所以"只留 limit 条"必须是 `[-limit:]` 而不是 `[:limit]` ——
+    #    后者会砍掉**最新**的那一段（她打开页面看到的第一件事就没了）。
+    #    2026-10-06 第一版就写反了，验收 B1 抓到。
+    items = load_window(relay, 0, before, limit + 1)
+    has_more = len(items) > limit
+    if has_more:
+        items = items[-limit:]
+    next_before = min((int(i.get("message_id") or 0) for i in items), default=0)
+    return {"items": items, "next_before": next_before if has_more else 0,
+            "has_more": has_more}
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # ③ 注入（读路径 —— 身体每次说话都经过这里）
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -481,9 +571,29 @@ def _install_routes(relay, public_prefix: str = "/") -> None:
 
     @relay.app.get(base)
     async def _list(request: Request):
-        """最近几段活动（已归一化）。`?limit=` 默认 20，上限 100。"""
+        """最近几段活动（已归一化）。`?limit=` 默认 20，上限 100。
+
+        🆕 带 `?before=<message_id>` 时**翻到更早的一页**（Tides 行迹页用），
+           此时上限放宽到 `PAGE_MAX`(=200)、返回里多三个字段（见 `page()`）：
+           `next_before` / `has_more` / `page`。
+
+        🔴 **不带 `before` 时的返回值与改前逐字节一致** —— 注入侧与老调用方不受影响。
+        """
         relay.check_auth(request)
-        try:
+        raw_before = _s(request.query_params.get("before"))
+        if raw_before:                                   # 🆕 翻页分支
+            try:
+                got = page(relay, norm_cursor(raw_before),
+                           page_limit(request.query_params.get("limit"), 40))
+                return _json({"ok": True, "count": len(got["items"]),
+                              "items": got["items"], "page": True,
+                              "next_before": got["next_before"],
+                              "has_more": got["has_more"],
+                              "note": "只读翻页；写侧是身体的 POST /channel/out type=activity"})
+            except Exception as e:
+                return _json({"ok": False, "reason": "page_failed",
+                              "detail": f"{type(e).__name__}: {e}"}, 500)
+        try:                                              # 老分支：一个字没改
             limit = int(request.query_params.get("limit") or 20)
         except Exception:
             limit = 20
@@ -494,6 +604,24 @@ def _install_routes(relay, public_prefix: str = "/") -> None:
                           "note": "只读；写侧是身体的 POST /channel/out type=activity"})
         except Exception as e:
             return _json({"ok": False, "reason": "list_failed",
+                          "detail": f"{type(e).__name__}: {e}"}, 500)
+
+    @relay.app.get(base + "/tides")
+    async def _tides(request: Request):
+        """Tides 行迹页的**首页**（= 第一页 + 明确语义，省得前端自己判"是不是第一页"）。
+
+        与 `GET /app/ext/activity?before=` 的差别只有一个：这里**永远有 items**
+        （哪怕是空的——她会看到"还没有行迹"，而不是一个报错）。
+        """
+        relay.check_auth(request)
+        try:
+            got = page(relay, 0, page_limit(request.query_params.get("limit"), 40))
+            return _json({"ok": True, "count": len(got["items"]), "items": got["items"],
+                          "page": True, "next_before": got["next_before"],
+                          "has_more": got["has_more"],
+                          "note": "Tides 行迹页 · 只读"})
+        except Exception as e:
+            return _json({"ok": False, "reason": "tides_failed",
                           "detail": f"{type(e).__name__}: {e}"}, 500)
 
     @relay.app.get(base + "/status")
@@ -509,11 +637,13 @@ def _install_routes(relay, public_prefix: str = "/") -> None:
             "enabled": not _off(),
             "mark": MARK,
             "limits": {"text_max_chars": TEXT_MAX, "items_max": ITEMS_MAX,
-                       "actions_max": ACTIONS_MAX, "line_max": LINE_MAX},
+                       "actions_max": ACTIONS_MAX, "line_max": LINE_MAX,
+                       "page_max": PAGE_MAX},
             "counts": c,
             "last_injection": last_injection(),
             "last_skip": dict(_LAST_SKIP),
             "window": "常驻注入：每轮带最近 N 段（滚动更新，不再按她开口切窗口）",
+            "tides": "行迹页：GET /app/ext/activity/tides 翻页，?before=<id> 往回",
             "note": "本层只读 + 只注入；不调 LLM、不写 messages、不挂 MCP 门",
         })
 

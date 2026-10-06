@@ -207,7 +207,9 @@ _ROUTES = [
     # 🆕 蒸馏管道（P2 ⑩-b）—— 人/动作触发（**没有定时器**）；redo 走软作废
     "/app/ext/distill", "/app/ext/distill/status",
     # 🆕 自主活动带回上下文（P2 ⑪）—— **全只读**；写侧是原版 /channel/out
+    #    （`/tides` = 行迹页首页 + 游标翻页，仍是同一个只读数据集的另一个读法）
     "/app/ext/activity", "/app/ext/activity/status", "/app/ext/activity/preview",
+    "/app/ext/activity/tides",
     # 🆕 usage 记账（P2）—— **全只读**；写侧只有网关内联一条（没有 POST 写路由）
     "/app/ext/usage/summary", "/app/ext/usage/recent", "/app/ext/usage/status",
     # 🆕 在场信号收口（P3 前置 ⑬）—— **全只读**；值的来源是 messages 里 direction='in'

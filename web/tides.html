@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>行迹 · Tides</title>
+
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link href="https://cdn.jsdelivr.net/npm/@fontsource/cormorant-garamond@5/400.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@fontsource/cormorant-garamond@5/500.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@fontsource/noto-serif-sc@5/400.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@fontsource/noto-serif-sc@5/500.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@fontsource/pinyon-script@5/400.min.css" rel="stylesheet">
+<meta name="theme-color" content="#F7FAFC">
+
+<script>
+  /* 主题：跟主页同一套（localStorage companion_theme），不写死 light。
+     独立页写死主题 = 她切了深色回来又变白，那一下很出戏。 */
+  (function(){
+    var T=["light","harbor"];
+    try{ var t=localStorage.getItem("companion_theme");
+         if(T.indexOf(t)<0) t="light";
+         document.documentElement.setAttribute("data-theme",t);
+    }catch(e){ document.documentElement.setAttribute("data-theme","light"); }
+  })();
+</script>
+
+<style>
+/* ───────── 变量：只抄主页用到的那些（跟随主题） ───────── */
+:root{
+  --font-en:"Cormorant Garamond",Georgia,serif;
+  --font-cn:"Noto Serif SC","Songti SC","STSong","SimSun",serif;
+  --font-script:"Pinyon Script","Cormorant Garamond",cursive;
+
+  --bg:#F7FAFC;
+  --wall-light:url("chat-light.webp");
+  --wall-harbor:url("chat-harbor.webp");
+  --wall-default:var(--wall-light);
+  --text:#253447;
+  --text-soft:#5E7080;
+  --text-faint:#8A99A8;
+  --accent:#4C6378;
+  --accent-deep:#2C4056;
+  --hairline:rgba(120,142,165,.24);
+  --field-bg:rgba(255,255,255,.55);
+  --field-line:rgba(255,255,255,.7);
+  --think-flourish:rgba(99,121,142,0.52);
+  --think-label:#6A7E8E;
+  --think-body:#56697A;
+  --sheet-bg:rgba(252,253,255,.90);
+  --sheet-line:rgba(255,255,255,.85);
+  --sheet-hi:rgba(255,255,255,.7);
+  --sheet-scrim:rgba(44,60,78,.44);
+  --shadow:0 18px 46px rgba(74,93,108,.12);
+  --soft-shadow:0 10px 26px rgba(86,104,118,.10);
+  --row-press:rgba(140,160,176,.09);
+  --scrim:linear-gradient(180deg,rgba(255,255,255,.48),rgba(255,255,255,.16) 32%,rgba(255,255,255,.06) 66%,rgba(255,255,255,.30));
+  --peer-avatar:url("avatar-sea.png");
+}
+:root[data-theme="harbor"]{
+  --wall-default:var(--wall-harbor);
+  --bg:#F4F2EF;
+  --text:#36404B;
+  --text-soft:#5E6B78;
+  --text-faint:#9197A0;
+  --accent:#4A5D6C;
+  --accent-deep:#4A5D6C;
+  --hairline:rgba(74,93,108,.20);
+  --field-bg:rgba(255,255,255,.52);
+  --field-line:rgba(255,255,255,.68);
+  --think-flourish:rgba(74,93,108,0.48);
+  --think-label:#5E6B78;
+  --think-body:#4F5D6A;
+  --sheet-bg:rgba(250,248,246,.92);
+  --sheet-line:rgba(255,255,255,.82);
+}
+
+*{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html,body{ margin:0; padding:0; }
+body{
+  background:var(--bg); color:var(--text);
+  font-family:var(--font-cn); font-size:15px; line-height:1.6;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  min-height:100vh; overflow-x:hidden;
+}
+.wall{ position:fixed; inset:0; z-index:-2; background:var(--bg) var(--wall-default) center/cover no-repeat; }
+.wall::after{ content:""; position:absolute; inset:0; background:var(--scrim); }
+img{ display:block; max-width:100%; }
+button{ font:inherit; color:inherit; cursor:pointer; border:none; background:none; }
+.hidden{ display:none !important; }
+.glass{ background:var(--field-bg); border:1px solid var(--field-line);
+  box-shadow:var(--soft-shadow), inset 0 1px 0 var(--sheet-hi);
+  -webkit-backdrop-filter:blur(16px) saturate(1.25); backdrop-filter:blur(16px) saturate(1.25); }
+
+/* ───────── 顶栏 ───────── */
+.bar{
+  position:sticky; top:0; z-index:30; display:flex; align-items:flex-start; gap:6px;
+  padding:calc(8px + env(safe-area-inset-top)) clamp(16px,5vw,28px) 4px;
+  background:linear-gradient(180deg,rgba(247,250,252,.82),rgba(247,250,252,0));
+  -webkit-backdrop-filter:blur(12px) saturate(1.15); backdrop-filter:blur(12px) saturate(1.15);
+}
+:root[data-theme="harbor"] .bar{
+  background:linear-gradient(180deg,rgba(244,242,239,.82),rgba(244,242,239,0));
+}
+.bar .icon{ width:36px; height:36px; margin-top:-3px; margin-left:-7px; display:grid; place-items:center;
+  border-radius:50%; color:var(--text); transition:background .2s,transform .15s; }
+.bar .icon:active{ transform:scale(.9); background:var(--hairline); }
+.bar .icon svg{ width:23px; height:23px; }
+.bar .grow{ flex:1; }
+.top-label{ text-align:right; font-family:var(--font-en); font-size:11.5px; font-weight:500;
+  letter-spacing:.32em; line-height:1.4; color:var(--text-faint); padding-right:2px; }
+.top-label .rule{ display:block; width:28px; height:1px; background:var(--hairline); margin:5px 0 0 auto; }
+
+.wrap{ max-width:560px; margin:0 auto; padding:0 clamp(16px,5vw,28px) calc(40px + env(safe-area-inset-bottom)); position:relative; z-index:1; }
+
+/* ───────── Hero ───────── */
+.hero{ text-align:left; padding:2px 0 4px; }
+.hero h1{ font-family:var(--font-script); font-weight:400; color:var(--text);
+  font-size:clamp(34px,10.8vw,48px); line-height:1; margin:0; }
+.hero .sub{ font-family:var(--font-en); font-style:italic; font-size:clamp(13px,3.8vw,16px);
+  color:var(--text-soft); margin-top:0; letter-spacing:.01em; }
+
+/* ───────── 时间流：一条竖线，每段经历一个节点 ───────── */
+.tide{ position:relative; padding-left:26px; margin-top:14px; }
+/* 竖线：贯穿整条流；到最后一个节点就停 —— 线不该比它记录的东西还长 */
+.tide::before{ content:""; position:absolute; left:5px; top:8px; bottom:14px; width:1px;
+  background:linear-gradient(180deg,var(--hairline),var(--hairline) 78%,transparent); }
+.node{ position:relative; margin-bottom:14px; animation:rise .3s cubic-bezier(.22,1,.36,1) both; }
+.node::before{ content:""; position:absolute; left:-24px; top:11px; width:7px; height:7px;
+  border-radius:50%; background:var(--bg); border:1px solid var(--think-flourish); }
+.node.last::before{ background:var(--think-flourish); }
+
+/* 日期分隔（像潮汐留下的水痕，一条淡线 + 日期） */
+.tide-day{ display:flex; align-items:center; gap:10px; margin:22px 0 12px; }
+.tide-day:first-child{ margin-top:6px; }
+.tide-day .d{ font-family:var(--font-cn); font-size:12.5px; color:var(--text-soft);
+  letter-spacing:.16em; white-space:nowrap; }
+.tide-day .ln{ flex:1; height:1px; background:var(--hairline); }
+
+/* ───────── 一段经历（跟聊天里的卡片同一族：--think-*） ───────── */
+.ev{ border:1px solid var(--field-line); border-left:2px solid var(--think-flourish);
+  border-radius:12px; background:var(--field-bg); padding:9px 12px 10px;
+  box-shadow:var(--soft-shadow), inset 0 1px 0 var(--sheet-hi);
+  -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px); }
+.ev-toggle{ appearance:none; -webkit-appearance:none; margin:0; padding:0; border:0;
+  background:transparent; color:inherit; font:inherit; cursor:pointer; text-align:left;
+  width:100%; display:flex; align-items:baseline; gap:8px; }
+.ev-toggle.bare{ cursor:default; }
+.ev-glyph{ flex:none; color:var(--think-flourish); font-size:1.02em; line-height:1;
+  transform:translateY(.06em); }
+.ev-title{ flex:1 1 auto; min-width:0; color:var(--think-label); font-family:var(--font-cn);
+  font-size:clamp(12.5px,1.34vw,14px); line-height:1.5; letter-spacing:.02em; overflow-wrap:anywhere; }
+.ev-state{ flex:none; color:var(--think-flourish); font-size:1.1em; line-height:1; }
+.ev-state::before{ content:"✧"; }
+.ev.open .ev-state::before{ content:"✦"; }
+.ev-toggle:hover .ev-state{ color:var(--accent); }
+.ev-toggle:hover .ev-title{ color:var(--think-body); }
+
+.ev-lines{ margin-top:7px; padding-left:9px; border-left:1px dashed var(--field-line); }
+.ev-more[hidden]{ display:none !important; }
+.ev-line{ display:flex; gap:8px; align-items:baseline; font-family:var(--font-cn);
+  font-size:clamp(12px,1.28vw,13px); line-height:1.62; color:var(--think-body);
+  white-space:pre-wrap; overflow-wrap:anywhere; }
+.ev-at{ flex:none; color:var(--text-faint); font-variant-numeric:tabular-nums; user-select:none; }
+/* B 类（footprint）＝ 他当时留下的那句话。老行才有；新行没有就是没有，不替他补。 */
+.ev-say{ border-left:2px solid var(--hairline); padding-left:8px; }
+.ev-foot{ margin-top:6px; color:var(--text-faint); font-family:var(--font-cn);
+  font-size:clamp(11.5px,1.24vw,12.5px); line-height:1.6; overflow-wrap:anywhere; }
+.ev-empty{ margin-top:4px; color:var(--text-faint); font-family:var(--font-cn);
+  font-size:clamp(11.5px,1.24vw,12.5px); }
+
+/* ───────── 加载更多 / 到底 / 空 / 错 ───────── */
+.more-wrap{ display:flex; justify-content:center; padding:18px 0 6px; }
+.more-btn{ padding:10px 20px; border-radius:22px; color:var(--text-soft);
+  font-family:var(--font-cn); font-size:13px; letter-spacing:.04em; transition:transform .15s,opacity .2s; }
+.more-btn:active{ transform:scale(.96); }
+.more-btn[disabled]{ opacity:.45; }
+.tide-end{ text-align:center; padding:22px 0 4px; color:var(--text-faint);
+  font-family:var(--font-en); font-style:italic; font-size:13.5px; letter-spacing:.04em; }
+
+.empty{ text-align:center; color:var(--text-soft); padding:40px 20px; }
+.empty .en{ font-family:var(--font-en); font-style:italic; font-size:19px; color:var(--text-faint); }
+.empty p{ font-family:var(--font-cn); font-size:13.5px; margin:9px 0 0; line-height:1.7; }
+.msg{ color:var(--danger,#c0553f); text-align:center; padding:14px; font-size:13.5px; }
+.loading{ text-align:center; color:var(--text-faint); font-family:var(--font-en);
+  font-style:italic; font-size:13.5px; padding:18px 0; }
+
+.gatebox{ background:var(--sheet-bg); border:1px solid var(--sheet-line); border-radius:22px;
+  padding:22px 20px; box-shadow:var(--shadow), inset 0 1px 0 var(--sheet-hi);
+  -webkit-backdrop-filter:blur(20px); backdrop-filter:blur(20px); margin-top:8px; }
+.gatebox p{ font-family:var(--font-cn); font-size:13px; color:var(--text-soft); text-align:center; margin:0 0 14px; line-height:1.6; }
+.gatebox input{ width:100%; padding:11px 14px; border:1px solid var(--field-line); border-radius:12px;
+  background:var(--field-bg); color:var(--text); font-family:var(--font-cn); font-size:14px; outline:none; }
+.gatebox .row{ display:flex; gap:10px; margin-top:14px; }
+.gatebox .row button{ flex:1; padding:12px; border-radius:13px; font-family:var(--font-cn); font-size:14px; transition:transform .15s; }
+.gatebox .row button:active{ transform:scale(.96); }
+.gatebox .row .ghost{ background:var(--field-bg); border:1px solid var(--field-line); color:var(--text-soft); }
+.gatebox .row .send{ background:var(--accent-deep); color:#fff; }
+
+.footer{ text-align:center; padding:38px 0 8px; }
+.footer h3{ font-family:var(--font-script); font-weight:400; font-size:32px; color:var(--text); margin:0; line-height:1; }
+.footer p{ font-family:var(--font-en); font-style:italic; font-size:13.5px; color:var(--text-faint); margin:9px 0 0; letter-spacing:.04em; }
+
+@keyframes rise{ from{ opacity:0; transform:translateY(10px); } }
+@media (prefers-reduced-motion:reduce){ *{ animation:none !important; } }
+</style>
+</head>
+<body>
+<div class="wall"></div>
+
+<div class="bar">
+  <button class="icon" id="topBack" title="返回">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+  </button>
+  <span class="grow"></span>
+  <div class="top-label">TIDAL<br>ECHOES<span class="rule"></span></div>
+</div>
+
+<div class="wrap" id="main">
+  <div class="hero">
+    <h1>Tides</h1>
+    <div class="sub">where we return.</div>
+  </div>
+
+  <div id="msg" class="msg hidden"></div>
+  <div class="tide" id="tide"></div>
+
+  <div class="more-wrap hidden" id="moreWrap">
+    <button class="more-btn glass" id="moreBtn">更早的</button>
+  </div>
+  <div class="tide-end hidden" id="tideEnd">this is where it begins.</div>
+
+  <div class="empty hidden" id="empty">
+    <div class="en">the tide hasn't come in yet</div>
+    <p>他还没在这儿留下行迹。<br>等他第一次自己醒来，这里就会长出来。</p>
+  </div>
+
+  <div class="footer">
+    <h3>Tides</h3>
+    <p>every walk leaves a line</p>
+  </div>
+</div>
+
+<div class="wrap hidden" id="gate">
+  <div class="hero" style="padding-top:40px"><h1>Tides</h1><div class="sub">where we return.</div></div>
+  <div class="gatebox">
+    <p>没读到访问密钥——先在主页登录，或在此粘贴密钥（与 PWA 同一个）。</p>
+    <input type="text" id="gateInput" placeholder="访问密钥">
+    <div class="row">
+      <button class="ghost" id="gateHome">去主页</button>
+      <button class="send" id="gateSave">保存并进入</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ─────────────────────────────────────────────────────────────
+   行迹（Tides）—— 一条时间流：这段时间他做了什么、去了哪。
+
+   数据源：**只读**，`GET /app/ext/activity/tides`（首页）
+           + `GET /app/ext/activity?before=<id>`（往回翻一页）。
+   写侧永远是身体的 `POST /channel/out type=activity`，本页**一个字都不写**。
+
+   🔴 三条它不许做的事（验收器 tools/tides_check.py 钉着）：
+     ① 不发明内容 —— 库里没有的就不显示，**绝不替他补一句**。
+        （措辞全是身体写的；本页只做排版。）
+     ② 不催债 —— 不显示"还有 N 条没看"这类**差值**。
+        只有"更早的"这个按钮，翻到底就安静收手（红线六：只给位置，不给差值）。
+     ③ 不改他的语气 —— 本页不参与任何决策；它只是把已有的行迹摆出来给她看。
+   ───────────────────────────────────────────────────────────── */
+const API_BASE = "/relay";
+const LS_KEY   = "companion_secret";
+const PAGE     = 40;          // 一页几段（后端上限 200，这里取个不撑屏的数）
+const PREVIEW  = 3;           // 折叠态最多显示几行动作
+let secret = localStorage.getItem(LS_KEY) || "";
+
+const peerName   = (localStorage.getItem("companion_profile_remark") || "").trim() || "Claude";
+const peerAvatar = localStorage.getItem("companion_avatar");
+document.documentElement.style.setProperty("--peer-avatar",
+  peerAvatar ? `url("${peerAvatar}")` : 'url("avatar-sea.png")');
+
+const $ = (id) => document.getElementById(id);
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function authHeaders(extra){ return Object.assign({"Authorization":"Bearer "+secret}, extra||{}); }
+
+async function api(path){
+  const r = await fetch(API_BASE + path, { headers: authHeaders() });
+  if (r.status === 401){ secret=""; localStorage.removeItem(LS_KEY); showGate(); throw new Error("401"); }
+  if (!r.ok){ let d=""; try{ d = (await r.json()).detail; }catch(_){} throw new Error(d || ("HTTP "+r.status)); }
+  return r.json();
+}
+
+function showGate(){ $("main").classList.add("hidden"); $("gate").classList.remove("hidden"); }
+function showMain(){ $("gate").classList.add("hidden"); $("main").classList.remove("hidden"); }
+
+function say(msg){
+  const box = $("msg");
+  if (!msg){ box.classList.add("hidden"); box.textContent=""; return; }
+  box.textContent = msg; box.classList.remove("hidden");
+}
+
+/* ── 日期：只从库里已有的时刻推，不编 ───────────────────────────
+   started 可能是 ISO，也可能是空（身体没给就真是没有）——
+   拿不到就不分组、不写日期，**不用"某天"糊过去**。 */
+function dayKey(it){
+  const s = (it && it.started) || "";
+  if (typeof s !== "string" || s.length < 10) return "";
+  if (s[4] !== "-" || s[7] !== "-") return "";
+  return s.slice(0,10);
+}
+function dayLabel(key){
+  if (!key) return "";
+  const [y,m,d] = key.split("-").map(Number);
+  if (!y || !m || !d) return key;
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const that  = new Date(y, m-1, d);
+  const days  = Math.round((today - that) / 86400000);
+  const wd    = ["周日","周一","周二","周三","周四","周五","周六"][that.getDay()];
+  if (days === 0) return `今天 · ${m}月${d}日 ${wd}`;
+  if (days === 1) return `昨天 · ${m}月${d}日 ${wd}`;
+  if (days < 7)   return `${days} 天前 · ${m}月${d}日 ${wd}`;
+  return `${y} 年 ${m} 月 ${d} 日 ${wd}`;
+}
+
+/* ── 一段经历 → 一张卡 ─────────────────────────────────────────
+   shape 就是 activity.py 的 extract() 输出，**前端不再二次归一化**
+   （后端已经锁过形状与取值；这里只排版）。 */
+function evData(it){
+  const acts = Array.isArray(it.actions) ? it.actions : [];
+  return {
+    actions: acts.filter(a => a && String(a.text||"").trim()),
+    footprint: String(it.footprint||"").trim(),
+    state: String(it.state||"").trim(),
+    minutes: (typeof it.minutes === "number") ? it.minutes : null,
+  };
+}
+function lineHtml(a){
+  return `<div class="ev-line">${a.at ? `<span class="ev-at">${esc(a.at)}</span>` : ""}<span>${esc(a.text)}</span></div>`;
+}
+function makeNode(it, isLast){
+  const d = evData(it);
+  const node = document.createElement("div");
+  node.className = "node" + (isLast ? " last" : "");
+
+  const head  = d.actions.slice(0, PREVIEW).map(lineHtml).join("");
+  const rest  = d.actions.slice(PREVIEW).map(lineHtml).join("")
+              + (d.footprint ? `<div class="ev-line ev-say"><span>${esc(d.footprint)}</span></div>` : "");
+  const expandable = !!rest;
+
+  const ev = document.createElement("div");
+  ev.className = "ev";
+  // 标题用**身体写的那句**（it.title）；他没给标题才用兜底文案，不自己编。
+  const title = String(it.title||"").trim() || "他自己待了一会儿";
+  // 时长只在库里真有这个数时才显示（minutes 算不出来就是 null，不显示）
+  const dur = (d.minutes != null && d.minutes >= 0) ? `<span class="ev-foot">待了 ${d.minutes} 分钟</span>` : "";
+  ev.innerHTML =
+      `<button class="ev-toggle${expandable ? "" : " bare"}" type="button"${expandable ? ' aria-expanded="false" aria-label="展开这次经历"' : ' tabindex="-1"'}>`
+      + `<span class="ev-glyph" aria-hidden="true">☀</span>`
+      + `<span class="ev-title">${esc(title)}</span>`
+      + (expandable ? `<span class="ev-state" aria-hidden="true"></span>` : "")
+      + `</button>`
+      + (head ? `<div class="ev-lines">${head}</div>` : "")
+      + (rest ? `<div class="ev-lines ev-more" hidden>${rest}</div>` : "")
+      + (!head && !rest ? `<div class="ev-empty">（这次没留下什么）</div>` : "")
+      + dur;
+
+  if (expandable){
+    const tg = ev.querySelector(".ev-toggle");
+    const more = ev.querySelector(".ev-more");
+    tg.addEventListener("click", () => {
+      const open = more.hidden;
+      more.hidden = !open;
+      ev.classList.toggle("open", open);
+      tg.setAttribute("aria-expanded", String(open));
+      tg.setAttribute("aria-label", open ? "收起这次经历" : "展开这次经历");
+    });
+  }
+  node.appendChild(ev);
+  return node;
+}
+
+/* ── 渲染：items 已按时间升序（新的在后） ────────────────────────── */
+let NEXT = 0;        // 下一页游标（0 = 没有下一页了）
+let LOADING = false;
+let TOTAL = 0;
+
+function renderAppend(items, replace){
+  const tide = $("tide");
+  if (replace) tide.innerHTML = "";
+
+  // 按日期分组：升序 ⇒ 先到的日期在前，翻页时新页接着往下长
+  const groups = new Map();
+  for (const it of items){
+    const k = dayKey(it);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(it);
+  }
+  // 同一天可能跨页（上午一页、下午一页）⇒ 已经渲染过的日期不重复画分隔线
+  const seen = new Set(Array.from(tide.querySelectorAll(".tide-day")).map(n => n.dataset.key));
+
+  for (const [k, list] of groups){
+    if (k && !seen.has(k)){
+      const h = document.createElement("div");
+      h.className = "tide-day"; h.dataset.key = k;
+      h.innerHTML = `<span class="d">${esc(dayLabel(k))}</span><span class="ln"></span>`;
+      tide.appendChild(h);
+    }
+    for (const it of list) tide.appendChild(makeNode(it, false));
+  }
+  // 最后一个节点点上实心（线到它就停）
+  const nodes = tide.querySelectorAll(".node");
+  if (nodes.length) nodes[nodes.length - 1].classList.add("last");
+  if (nodes.length > 1 && nodes[nodes.length-2].classList.contains("last"))
+    nodes[nodes.length-2].classList.remove("last");
+
+  TOTAL += items.length;
+  $("empty").classList.toggle("hidden", TOTAL > 0);
+}
+
+function setMore(hasMore){
+  $("moreWrap").classList.toggle("hidden", !hasMore);
+  $("tideEnd").classList.toggle("hidden", hasMore || TOTAL === 0);
+  $("moreBtn").disabled = LOADING;
+}
+
+async function load(before){
+  if (LOADING) return;
+  LOADING = true; setMore(true); say("");
+  try{
+    const path = before
+      ? `/app/ext/activity?limit=${PAGE}&before=${encodeURIComponent(before)}`
+      : `/app/ext/activity/tides?limit=${PAGE}`;
+    const d = await api(path);
+    const items = Array.isArray(d.items) ? d.items : [];
+    NEXT = Number(d.next_before) || 0;
+    // 首页要倒过来（最新在上）；翻页的新页本来就是更早的，**不再倒**
+    renderAppend(before ? items : items.slice().reverse(), !before);
+    setMore(!!d.has_more && NEXT > 0);
+  }catch(e){
+    if (e.message !== "401") say("读不出来：" + e.message);
+    $("moreWrap").classList.add("hidden");
+  }finally{
+    LOADING = false; $("moreBtn").disabled = false;
+  }
+}
+
+/* ── 接线 ── */
+$("moreBtn").onclick = () => { if (NEXT > 0) load(NEXT); };
+$("topBack").onclick = () => location.assign("index.html");
+$("gateHome").onclick  = () => location.assign("index.html");
+$("gateSave").onclick  = () => {
+  const v = $("gateInput").value.trim();
+  if (v){ secret = v; localStorage.setItem(LS_KEY, v); showMain(); load(0); }
+};
+
+if (!secret) showGate(); else load(0);
+</script>
+</body>
+</html>

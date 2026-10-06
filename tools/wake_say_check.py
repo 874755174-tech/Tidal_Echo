@@ -93,6 +93,28 @@ PASS, FAIL = [], []
 
 def chk(name, cond, detail=""):
     (PASS if cond else FAIL).append(name)
+
+
+def _last_call(src: str, token: str) -> int:
+    """返回 `token` 在源码里**最后一次作为调用出现**的下标；找不到返回 -1。
+
+    🔴 为什么不能直接用 `src.rindex(token)` / `src.index(token)`：
+      · rindex 会撞上**函数定义**那一行 —— `def _pull_house_chat(state):` 里
+        也含这个 token，顺序断言会拿定义当调用，锁了个不相干的位置。
+      · index 撞上第一次出现就停，而 docstring / 注释里都可能有。
+      · 找不到时 `.index` 直接抛 ValueError，整份报告**崩在中途**，
+        后面几组断言一条都跑不到 —— 报告残缺比断言红更糟。
+    这里取「最后一次出现」，并且排除掉定义行与注释行；找不到就是 -1，
+    交给调用方判失败，绝不让验收器自己崩。
+    """
+    best = -1
+    for i, line in enumerate(src.splitlines()):
+        s = line.strip()
+        if s.startswith("#"):
+            continue
+        if token in line and not s.startswith("def ") and not s.startswith('"') and not s.startswith("'"):
+            best = i
+    return best
     print(("[OK] " if cond else "[!!] ") + name + (f"\n        {detail}" if detail and not cond else ""))
 
 
@@ -275,10 +297,17 @@ def main() -> int:
         chk("E6 两个出口是两次独立调用（L5 与 L5b）",
             "_post_activity_to_house(state, decision, wake_started, wake_feed_start)   # L5"
             in src_sched and "_say_to_house(state, decision)" in src_sched, "查唤醒收尾")
+        # 🔴 2026-10-06 修：这条曾经写成 `index("_house_chat_signal = _pull_house_chat(state)")`
+        #   ——锁的是**变量名**，不是设计。身体侧 10-06 把那个结果改名成 `_recent_chat`
+        #   （它不再是「给行迹的信号」，只是最近十轮对话原文），设计一点没变，
+        #   断言却直接崩了。教训同 D9：**别把一次性的写法写进断言**。
+        #   现在锁的是 E 组真正要锁的那句话 ——「拉会话在前，发话在后」。
+        _pull_at = _last_call(src_sched, "_pull_house_chat(state)")
+        _say_at = _last_call(src_sched, "_say_to_house(state, decision)")
         chk("E7 L5b 在 _pull_house_chat 之后被调（会话已经读到了才发话）",
-            src_sched.rindex("_say_to_house(state, decision)")
-            > src_sched.index("_house_chat_signal = _pull_house_chat(state)"),
-            "查唤醒收尾的顺序（rindex = 调用点，不是函数定义）")
+            _pull_at >= 0 and _say_at >= 0 and _pull_at < _say_at,
+            f"查唤醒收尾的顺序：拉会话@{_pull_at} 发话@{_say_at}"
+            f"（-1 = 这次连调用点都没找到，不是顺序错）")
         chk("E8 兜底：增量里没有她的话时补扫一次（第一次部署/她这几轮没开口）",
             "def _seed_house_session(" in src_sched
             and "_seed_house_session(state, _key)" in src_sched, "查 _pull_house_chat")
