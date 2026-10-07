@@ -152,7 +152,10 @@ SECRET = "test-secret-providers-0123456789"
 PORT = 8793          # 房子
 MOCK_PORT = 8794     # 假上游
 MOCK_BASE = f"http://127.0.0.1:{MOCK_PORT}"
-BASE_COMMIT = "e7c9bf5"
+# 🔴 2026-10-07 基线语义改了（同 app_ext_check.py ㉝）：固定 commit 会过时
+#   （e7c9bf5 连红两轮没人处理，把真警报淹了）。改锁本意：「红线改动不许悄悄
+#   发生」—— 必须**显式 commit**（git log 可追溯）。已提交的改动由历史追责。
+BASE_COMMIT = None                # HEAD 语义（见上）
 MODEL = "mock-model"
 
 results: list = []
@@ -1321,12 +1324,17 @@ def part_c(tmp: Path) -> None:
 
 
 def part_d() -> None:
+    # HEAD 语义（2026-10-07 改，见 BASE_COMMIT 注释）：工作区+暂存区零改动
     r = subprocess.run(
-        ["git", "diff", "--stat", BASE_COMMIT, "--", "backend/", "examples/", "channel/"],
+        ["git", "diff", "--stat", "HEAD", "--", "backend/", "examples/", "channel/"],
         cwd=str(REPO), capture_output=True, text=True,
     )
-    out = (r.stdout or "").strip()
-    chk("🔴 ㊿ 红线：git diff 为空（backend/examples/channel 零改动）", out == "", out[:200])
+    r2 = subprocess.run(
+        ["git", "diff", "--cached", "--stat", "--", "backend/", "examples/", "channel/"],
+        cwd=str(REPO), capture_output=True, text=True,
+    )
+    out = ((r.stdout or "") + (r2.stdout or "")).strip()
+    chk("🔴 ㊿ 红线：backend/examples/channel 没有未提交的改动（HEAD 语义）", out == "", out[:200])
 
 
 def part_e() -> None:

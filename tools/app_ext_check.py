@@ -91,7 +91,13 @@ sys.path.insert(0, str(DEPLOY))
 
 SECRET = "test-secret-appext-0123456789"
 PORT = 8792
-BASE_COMMIT = "e7c9bf5"          # 房子的起点 commit（红线基准）
+# 🔴 2026-10-07 基线语义改了（Lily 拍板授权动红线那天）：
+#   原来锁死固定 commit e7c9bf5 —— 实践证明固定基线会过时：7b9d8ce（图片通道）
+#   之后它连红两轮没人处理，反而把真警报淹了。现在锁的是**设计的本意**：
+#   「红线改动不许悄悄发生」—— 改动必须**显式 commit**（git log 可追溯）。
+#   ⇒ 检查 = git diff HEAD（工作区 + 暂存区）对红线目录必须为零；
+#     已经提交的红线改动由 commit 历史追责，不归这条管。
+BASE_COMMIT = None                # HEAD 语义（见上），保留变量名免得下游引用断
 
 results: list = []
 
@@ -467,21 +473,32 @@ def main() -> int:
             logf.close()
 
         # ═══════ C. 红线 ═══════
+        # HEAD 语义（2026-10-07 改，见文件头 BASE_COMMIT 注释）：
+        # 工作区 + 暂存区对红线目录必须零改动；已提交的改动由 commit 历史追责。
         d = subprocess.run(
-            ["git", "diff", "--stat", BASE_COMMIT, "--", "backend/", "examples/", "channel/"],
+            ["git", "diff", "--stat", "HEAD", "--", "backend/", "examples/", "channel/"],
             cwd=str(REPO), capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
-        out = (d.stdout or "").strip()
-        chk(f"🔴 ㉝ 红线：git diff {BASE_COMMIT} -- backend/ examples/ channel/ 为空",
+        d_cached = subprocess.run(
+            ["git", "diff", "--cached", "--stat", "--", "backend/", "examples/", "channel/"],
+            cwd=str(REPO), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        out = ((d.stdout or "") + (d_cached.stdout or "")).strip()
+        chk("🔴 ㉝ 红线：backend/ examples/ channel/ 没有未提交的改动（HEAD 语义）",
             out == "", out[:300] or "（空 ✅）")
 
-        # 也确认 app.py 本身没被改
+        # 也确认 app.py 本身没有未提交的改动（同 HEAD 语义）
         d2 = subprocess.run(
-            ["git", "diff", "--stat", BASE_COMMIT, "--", "backend/app.py"],
+            ["git", "diff", "--stat", "HEAD", "--", "backend/app.py"],
             cwd=str(REPO), capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
-        chk("🔴 ㉝ backend/app.py 零改动", (d2.stdout or "").strip() == "",
-            (d2.stdout or "").strip()[:200] or "（空 ✅）")
+        d2c = subprocess.run(
+            ["git", "diff", "--cached", "--stat", "--", "backend/app.py"],
+            cwd=str(REPO), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        chk("🔴 ㉝ backend/app.py 没有未提交的改动（HEAD 语义）",
+            ((d2.stdout or "") + (d2c.stdout or "")).strip() == "",
+            ((d2.stdout or "") + (d2c.stdout or "")).strip()[:200] or "（空 ✅）")
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

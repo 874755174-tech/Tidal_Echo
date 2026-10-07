@@ -213,10 +213,17 @@ def relay_rows(before_id: int | None, session_id: str, limit: int) -> list[dict[
         where.append("id < ?")
         params.append(int(before_id))
     if session_id:
-        where.append("json_extract(meta, '$.api_session') = ?")
+        # 🔴 2026-10-07（Lily 拍板）：自唤醒留话（meta.wake_say=1）不挑会话。
+        #    他醒来留给 Lily 的话带的是「她上次活跃会话」的 id（house_session），
+        #    而他此刻聊天的会话可能不是那个 —— 不豁免的话，他构建上下文时
+        #    读不到自己说过这句（「聊天时他不知道自己推送过什么」的真因，
+        #    10-07 查实）。放行后：他在任何会话都记得自己留给过她什么。
+        where.append("(json_extract(meta, '$.api_session') = ? "
+                     "OR json_extract(meta, '$.wake_say') = 1)")
         params.append(session_id)
     else:
-        where.append("(json_extract(meta, '$.api_session') IS NULL OR json_extract(meta, '$.api_session') = '')")
+        where.append("((json_extract(meta, '$.api_session') IS NULL OR json_extract(meta, '$.api_session') = '') "
+                     "OR json_extract(meta, '$.wake_say') = 1)")
     sql = (
         "SELECT id, direction, kind, text, meta FROM messages "
         f"WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?"

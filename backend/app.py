@@ -190,7 +190,8 @@ def history_for_session(session_id: str, since: int, limit: int) -> list:
         if session_id == "__legacy__":
             rows = conn.execute(
                 "SELECT * FROM messages "
-                "WHERE id > ? AND (json_extract(meta, '$.api_session') IS NULL OR json_extract(meta, '$.api_session') = '') "
+                "WHERE id > ? AND (json_extract(meta, '$.api_session') IS NULL OR json_extract(meta, '$.api_session') = '' "
+                "OR json_extract(meta, '$.wake_say') = 1) "
                 "ORDER BY id ASC LIMIT ?",
                 (since, limit),
             ).fetchall()
@@ -201,9 +202,16 @@ def history_for_session(session_id: str, since: int, limit: int) -> list:
             #    activity 放行（"每个会话视图都显示"），但这里若仍按会话严格
             #    过滤，这张卡片会在真实会话里被滤没、只剩 __legacy__ 能看到，
             #    正好把"我做了事你看得见"变成反的。故豁免 activity。
+            # 🔴 2026-10-07（Lily 拍板）：自唤醒留话（meta.wake_say=1）同样豁免。
+            #    他醒来留话时你开着的可能是任何会话（或没开）；按会话严格过滤
+            #    = 把一句"推给你的话"关进抽屉 —— 你换个会话就看不见，而他说完
+            #    就睡、根本不知道还有"抽屉"这回事。10-05 你恰好开着它落的那个
+            #    会话所以看得见，10-07 触发，看起来像"昨晚施工弄坏的"。
+            #    放行后：你在**任何**会话视图都看得见他留给你的话。
             rows = conn.execute(
                 "SELECT * FROM messages "
-                "WHERE id > ? AND (json_extract(meta, '$.api_session') = ? OR kind = 'activity') "
+                "WHERE id > ? AND (json_extract(meta, '$.api_session') = ? OR kind = 'activity' "
+                "OR json_extract(meta, '$.wake_say') = 1) "
                 "ORDER BY id ASC LIMIT ?",
                 (since, session_id, limit),
             ).fetchall()

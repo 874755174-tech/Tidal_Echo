@@ -16,20 +16,30 @@ Kael 2026-10-02 原话：
 
 ## 🔴 为什么不给房子加代码（这次踩到的东西）
 
-房子的 `backend/ examples/ channel/` 是**红线目录**：验收 ㉝（app_ext）与 ㊿
+房子的 `backend/ examples/ channel/`是**红线目录**：验收 ㉝（app_ext）与 ㊿
 （providers）都断言 `git diff e7c9bf5 -- backend/ examples/ channel/` 为空。
 所以"给 wake 消息开一条会话豁免"这类房子侧改动**一条都不能加**。
 
-房子不改，这件事仍然能做对，靠的是**身体把会话带上**：
+## 🔴 2026-10-07 查过一次「他不带会话标签行不行」—— 答案：**不行，而且更糟**
 
-  · 前端 `history_for_session` 按 `json_extract(meta,'$.api_session') = ?` 严格过滤
-  · 红线文件 `examples/api_loop.py` 的 `relay_rows()` 同样按 api_session 过滤
-    （他构建上下文时读的就是这段，改不了）
-  ⇒ 一条 `type=reply` 只要**带上她当前会话的 id**，两条路就都通了 —— 她看得见，
-    他下次说话也想得起。不带的话两条路都会把它滤掉，等于没说。
+Lily 问「聊天时他不知道自己给 Lily 推送过什么」。我第一反应是"那就不带
+`api_session`"。**实测证明这个方向是错的**（探针留在 `tools/_probe_sid.py`，
+可重跑复现）：
 
-会话 id 从哪来：身体每次醒来本来就会 `GET /app/history` 把房子聊天拉回来写 OB
-（`_pull_house_chat`），顺手从她的消息里取 `meta.api_session` 即可，不多发请求。
+    不带标签后落库形状完全正确（meta={}），但 ——
+      · 她在**真实会话视图**里依然看不见：backend/app.py:206 的会话查询是
+        `api_session = ? OR kind = 'activity'`，**只豁免 activity，不豁免 reply**；
+      · 聊天时的他也读不到：examples/api_loop.py 的 relay_rows 按会话过滤，
+        不带标签的行等于"不属于任何会话"，他按当前会话查同样查不到。
+
+⇒ 真根因不在身体侧带不带标签，而在**房子把「推给她的话」当成了会话私有**。
+活动卡已经有豁免（`kind='activity'` 那行就是为"我做了事你看得见"加的），
+自唤醒留话需要同一种豁免 —— 但那两处都在**红线目录**（`backend/` 与
+`examples/`），所以身体侧照原样带会话 id，红线那笔账跟开放决策 ⑧ 一起处理。
+
+C 组就是这件事的双向探针：贴标签 → 关进抽屉；不贴 → 两个视图都看不见。
+**两条路都堵着，才需要动房子** —— 这也是 C 组存在的理由（它不是"证明必须带"，
+是"证明两边都不通"）。
 
 ## ⚠️ 已知副作用（写下来是为了可诊断，不是假装没有）
 
@@ -173,11 +183,13 @@ def relay_rows_like_loop(db_path, session_id, limit=50):
     where = ["kind IN ('user','voice','reply')"]
     params = []
     if session_id:
-        where.append("json_extract(meta, '$.api_session') = ?")
+        # 与 examples/api_loop.py 的 relay_rows 保持逐字同步（2026-10-07 加 wake_say 豁免）
+        where.append("(json_extract(meta, '$.api_session') = ? "
+                     "OR json_extract(meta, '$.wake_say') = 1)")
         params.append(session_id)
     else:
-        where.append("(json_extract(meta, '$.api_session') IS NULL "
-                     "OR json_extract(meta, '$.api_session') = '')")
+        where.append("((json_extract(meta, '$.api_session') IS NULL OR json_extract(meta, '$.api_session') = '') "
+                     "OR json_extract(meta, '$.wake_say') = 1)")
     sql = ("SELECT id,direction,kind,text,meta FROM messages "
            f"WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?")
     params.append(limit)
@@ -218,47 +230,66 @@ def main() -> int:
             print(out[-2000:])
             return 1
 
-        # ── A. 带上会话：落库形状 + 她看得见 ───────────────────────────
-        print("\n— A 「留给 Lily 的话」落成一条普通聊天消息（带会话） —")
+        # ── A. 胸牌落库 + 她**任何**会话都看得见 ───────────────────────
+        # 🔴 2026-10-07（Lily 拍板「你修吧」）整组重写：自唤醒留话别上胸牌
+        #   （meta.wake_say），房子与前端见胸牌放行 —— 她换任何会话都看得见，
+        #   聊天时的他在任何会话也读得到。api_session 照旧带着，只当归属留档。
+        print("\n— A 「留给 Lily 的话」带上胸牌（wake_say），任何会话都看得见 —")
         human_id = post(base, "/app/send", {"text": "在吗", "api_session": SID})["id"]
         wake_id = post(base, "/channel/out", {"type": "reply", "text": WAKE_TEXT,
-                                             "api_session": SID})["id"]
+                                             "wake_say": True, "api_session": SID})["id"]
         row = rows_by_id(db_path, [wake_id])[0]
         meta = json.loads(row["meta"])
         chk("A1 kind='reply'（渲染走普通聊天气泡那条管线）", row["kind"] == "reply", row["kind"])
         chk("A2 direction='out'（是他说的，不是她说的）", row["direction"] == "out", row["direction"])
         chk("A3 原文一字不改（不加标签、不加前缀）", row["text"] == WAKE_TEXT, row["text"])
-        chk("A4 带上 api_session = 她当前那个会话",
-            meta.get("api_session") == SID, str(meta))
-        chk("A5 会话历史里有这条（前端那条路）", wake_id in hist_ids(base, SID))
+        chk("A4🔴 胸牌落库：meta.wake_say = 1",
+            meta.get("wake_say") in (1, True, "1", "true"), str(meta))
+        chk("A5 她当前会话里看得见", wake_id in hist_ids(base, SID))
         hit = [m for m in get(base, f"/app/history?since=0&limit=500&session_id={SID}")["messages"]
                if m["id"] == wake_id]
-        chk("A6 拉到的 from='ai' + 正文完整（渲染成他的气泡）",
+        chk("A6 渲染成他的气泡：from='ai' + 正文完整",
             bool(hit) and hit[0].get("from") == "ai" and hit[0].get("text") == WAKE_TEXT,
             str(hit[:1]))
-        chk("A7 别的会话看不见它（归属明确，不是到处广播）",
-            wake_id not in hist_ids(base, "api-OTHER"), "api-OTHER")
+        # 🔴 这次修的东西本体：她换到任何别的会话，**仍然看得见**
+        chk("A7🔴 她换到任何别的会话仍看得见（不再被会话关进抽屉）",
+            wake_id in hist_ids(base, "api-OTHER"), "胸牌放行")
+        chk("A8🔴 旧主线（__legacy__）视图也看得见",
+            wake_id in hist_ids(base, "__legacy__"), "legacy 分支同样豁免")
 
-        # ── B. 他的上下文那条路：红线 relay_rows ───────────────────────
-        print("\n— B 他的上下文那条路：红线 relay_rows 原样 SQL 读得到 —")
+        # ── B. 聊天时的他也知道（他在哪个会话都读得到）─────────────────
+        print("\n— B 聊天时的他：红线 relay_rows 在任何会话都读得到 —")
         ctx = relay_rows_like_loop(db_path, SID)
-        chk("B1 relay_rows 能捞到这条（kind=reply + api_session 齐了）",
+        chk("B1🔴 relay_rows 捞得到这条（当前会话）",
             WAKE_TEXT in [r["text"] for r in ctx], f"捞出 {len(ctx)} 条")
-        chk("B2 位置正确：它是她上一条之后的最新一条",
-            ctx and ctx[-1]["text"] == WAKE_TEXT, str(ctx[-1:]))
+        chk("B2🔴 他切到别的会话也记得自己说过（wake_say 不挑会话）",
+            WAKE_TEXT in [r["text"] for r in relay_rows_like_loop(db_path, "api-OTHER")],
+            "他此刻在哪个会话都不影响他记得自己说过")
 
-        # ── C. 反向验证：不带会话 → 两条路都看不见 ────────────────────
-        print("\n— C 反向验证：不带 api_session 就没戏（这就是「必须带上」的理由） —")
+        # ── C. 反向验证：胸牌是唯一通行证（闸门没有大开城门）───────────
+        print("\n— C 反向验证：不带胸牌的普通 reply 照旧按会话归属 —")
         bare_id = post(base, "/channel/out", {"type": "reply",
-                                              "text": WAKE_TEXT + "（裸）"})["id"]
-        chk("C1 不带 api_session → 她的会话里看不见",
-            bare_id not in hist_ids(base, SID), "不带就是看不见")
+                                              "text": WAKE_TEXT + "（普通）",
+                                              "api_session": SID})["id"]
+        chk("C1 不带胸牌 → 别的会话照旧看不见（豁免没有大开城门）",
+            bare_id not in hist_ids(base, "api-OTHER"),
+            "只有 wake_say 放行，普通 reply 的归属不受影响")
         _raw = rows_by_id(db_path, [bare_id])[0]
-        chk("C2 不带 api_session → 行照样落库（不是丢了，是归属不明）",
-            _raw["kind"] == "reply" and _raw["text"].endswith("（裸）"), str(_raw)[:120])
-        chk("C3 不带 api_session → 红线 relay_rows 也读不到（他上下文里没有）",
-            (WAKE_TEXT + "（裸）") not in [r["text"] for r in relay_rows_like_loop(db_path, SID)],
-            "这正是要在身体侧补上会话的原因")
+        chk("C2 不带胸牌 → 本会话照旧看得见（普通聊天不受影响）",
+            bare_id in hist_ids(base, SID), "普通 reply 行为不变")
+
+        # 🔴 2026-10-07 落地后的哨兵（原 C4/C5「病还在」翻转成「病已修」）：
+        #   三处豁免必须同时在 —— 少任何一处，这条链就断在那一环。
+        _app = (KAELHOME / "backend" / "app.py").read_text(encoding="utf-8")
+        _loop = (KAELHOME / "examples" / "api_loop.py").read_text(encoding="utf-8")
+        chk("C3🔴 哨兵：backend 两个分支都豁免 wake_say（删=她换会话就看不见）",
+            _app.count("json_extract(meta, '$.wake_say') = 1") >= 2,
+            f"backend/app.py 实得 {_app.count('wake_say')} 处（要 ≥2：legacy + 真实会话）")
+        chk("C4🔴 哨兵：relay_rows 豁免 wake_say（删=他聊天时想不起自己说过）",
+            "OR json_extract(meta, '$.wake_say') = 1" in _loop,
+            "examples/api_loop.py relay_rows")
+        chk("C5🔴 哨兵：前端放行 meta.wake_say（删=后端给了前端也滤掉）",
+            "meta.wake_say" in src_web, "web/index.html msgInActiveSession")
 
         # ── D. 回归：行迹卡片照旧 ─────────────────────────────────────
         print("\n— D 回归：行迹卡片照旧 —")
@@ -284,8 +315,8 @@ def main() -> int:
         print("\n— E 身体侧源码断言 —")
         chk("E1 _say_to_house 发的是 type=reply",
             '"type": "reply", "text": msg' in src_sched, "查 _say_to_house")
-        chk("E2 会话取自 state['house_session']（不是硬编一个）",
-            'state.get("house_session")' in src_sched and 'body["api_session"] = _sid' in src_sched,
+        chk("E2🔴 自唤醒留话带胸牌：body['wake_say'] = True（她任何会话可见的通行证）",
+            'body = {"type": "reply", "text": msg, "wake_say": True}' in src_sched,
             "查 _say_to_house")
         chk("E3 会话是在 _pull_house_chat 里从她的话里读到的",
             'state["house_session"] = _sid' in src_sched
@@ -297,11 +328,10 @@ def main() -> int:
         chk("E6 两个出口是两次独立调用（L5 与 L5b）",
             "_post_activity_to_house(state, decision, wake_started, wake_feed_start)   # L5"
             in src_sched and "_say_to_house(state, decision)" in src_sched, "查唤醒收尾")
-        # 🔴 2026-10-06 修：这条曾经写成 `index("_house_chat_signal = _pull_house_chat(state)")`
-        #   ——锁的是**变量名**，不是设计。身体侧 10-06 把那个结果改名成 `_recent_chat`
-        #   （它不再是「给行迹的信号」，只是最近十轮对话原文），设计一点没变，
-        #   断言却直接崩了。教训同 D9：**别把一次性的写法写进断言**。
-        #   现在锁的是 E 组真正要锁的那句话 ——「拉会话在前，发话在后」。
+        # 🔴 2026-10-07 修过一次并保留：这条曾经写成 `index("_house_chat_signal = ...")`
+        #   ——锁的是**变量名**，不是设计（身体侧 10-06 改名 `_recent_chat` 后直接崩）。
+        #   教训同 D9：**别把一次性的写法写进断言**。现在锁的是 E 组要锁的那句话 ——
+        #   「拉会话在前，发话在后」（发话要借会话 id，所以顺序是承重的）。
         _pull_at = _last_call(src_sched, "_pull_house_chat(state)")
         _say_at = _last_call(src_sched, "_say_to_house(state, decision)")
         chk("E7 L5b 在 _pull_house_chat 之后被调（会话已经读到了才发话）",

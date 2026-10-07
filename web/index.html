@@ -4037,6 +4037,10 @@ function msgInActiveSession(m){
   //       在对应会话里出现，且落入他的上下文。见 KaelLife scheduler.py 的
   //       `_say_to_house` / `_pull_house_chat`。
   if (m && m.kind === "activity") return true;
+  // 🔴 2026-10-07：自唤醒留话（meta.wake_say）跟活动卡同一逻辑 —— 他给你留话时
+  //    你开着的可能是任何会话（或没开网页），它不属于"某个会话"，属于"你"。
+  //    后端 history_for_session 与红线 relay_rows 已同步放行（Lily 拍板「你修吧」）。
+  if (meta.wake_say) return true;
   if (!activeApiSession || activeApiSession === LEGACY_SESSION_ID) return !meta.api_session;
   return meta.api_session === activeApiSession;
 }
