@@ -9,10 +9,10 @@
    ⚠️ 同理：`PRECACHE` 里加页面（2026-10-06 加 tides.html）也归这一行管 ——
       独立页没进 precache 时走的是下面 fetch 分支的"先缓存后网络"，
       她**第二次**打开就会拿到第一次缓存下来的旧壳（老壳缓存的第二个坑）。 */
-const CACHE = "kael-home-v11-wakesay";
+const CACHE = "kael-home-v12-since";
 /* 壳版本号：跟 index.html 里的 SHELL_VERSION 必须一致。
    前端拿它跟 SW 的 VERSION 比，对不上就说明「你手上是旧壳」，当场提示刷新。 */
-const VERSION = "2026-10-08-wakesay";
+const VERSION = "2026-10-09-since";
 const AI_NAME = "Claude";          // push-title fallback; keep in sync with index.html CONFIG.AI_NAME
 const PRECACHE = [
   "./index.html",
